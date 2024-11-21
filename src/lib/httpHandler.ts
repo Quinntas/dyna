@@ -4,7 +4,7 @@ import {HttpError, internalServerError, notFound} from "./errors.ts";
 import {jsonResponse} from "./responses.ts";
 import type {Json} from "./types.ts";
 import {type CompiledQuery, compileQuery, isCompiledQuery} from "graphql-jit";
- 
+
 export function handleError(res: ServerResponse, error: Error) {
     // TODO: move this later
     console.error(error.message);
