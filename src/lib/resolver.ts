@@ -10,6 +10,7 @@ export abstract class Resolver<Context, Input, Output> {
     private readonly _output: GraphQLObjectType;
     private readonly _input: ThunkObjMap<GraphQLInputFieldConfig> | undefined;
 
+    // TODO: fix this type
     get type(): any {
         return {
             [this._name]: {

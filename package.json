@@ -3,7 +3,10 @@
   "module": "index.ts",
   "type": "module",
   "scripts": {
-    "dev": "tsx --watch ./src/infra/index.ts",
+    "dev": "tsx watch ./src/infra/index.ts",
+    "build": "bun build ./src/infra/index.ts --outdir ./dist --target=node --minify && pnpm generate:schema",
+    "typecheck": "pnpm tsc",
+    "start": "node ./dist/index.js",
     "generate:schema": "tsx ./src/graphql/generateSchema.ts"
   },
   "devDependencies": {
@@ -19,6 +22,7 @@
     "drizzle-orm": "^0.36.3",
     "graphql": "^16.9.0",
     "graphql-jit": "^0.8.7",
+    "ioredis": "^5.4.1",
     "postgres": "^3.4.5"
   }
 }

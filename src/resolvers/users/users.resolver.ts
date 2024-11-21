@@ -16,6 +16,7 @@ export class UsersResolver extends Resolver<Context, UsersInputDTO, UsersOutputD
         resolveInfo: GraphQLResolveInfo,
     ): UsersOutputDTO {
         console.log(input);
+        console.log(context)
         console.log(parseGraphQLResolveInfo('User', 2, resolveInfo));
 
         return {
