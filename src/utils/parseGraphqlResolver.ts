@@ -1,9 +1,10 @@
 import {GraphQLError, type GraphQLResolveInfo, type SelectionNode} from 'graphql/index';
 import {Kind} from 'graphql/language';
-import type {PgColumn} from "drizzle-orm/pg-core";
+import {tables} from "../infra/database.ts";
+import type {Column} from "drizzle-orm";
 
 type ParsedGraphQLResolveInfo = {
-    [key: string]: PgColumn | ParsedGraphQLResolveInfo;
+    [key: string]: Column | ParsedGraphQLResolveInfo;
 };
 
 function getPropertiesFromSelectionSet(
@@ -19,7 +20,7 @@ function getPropertiesFromSelectionSet(
             const table = tables[objectName];
             if (!table) throw new GraphQLError(`Table ${table} not found`);
             Object.assign(obj, {
-                // @ts-ignore
+                // @ts-ignore - TODO: fix this
                 [selections[i].name.value]: table[selections[i].name.value],
             });
         } else {

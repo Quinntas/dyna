@@ -1,6 +1,4 @@
-import {createServer} from 'node:http';
-import {httpHandler} from '../lib/httpHandler';
-import {schema} from '../graphql/schema';
 import {server} from "./server.ts";
+import {env} from "../utils/env.ts";
 
-server.listen(parseInt(process.env.PORT!));
+server.listen(env.PORT);

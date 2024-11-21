@@ -1,6 +1,6 @@
 import {GraphQLBoolean, GraphQLInputObjectType, GraphQLInt} from 'graphql/type';
 import {GraphQLNonNull, GraphQLObjectType} from 'graphql';
-import {newEnumType} from './factories/enum';
+import {newEnumType} from "../constructors/enum.ts";
 
 export enum PaginationOrderByEnum {
     ASC = 'ASC',

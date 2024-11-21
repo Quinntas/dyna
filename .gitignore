@@ -10,6 +10,9 @@ yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
 
+schema.graphql
+graphql.config.yml
+
 pnpm-lock.yaml
 
 .idea

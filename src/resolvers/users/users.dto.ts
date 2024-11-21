@@ -1,11 +1,11 @@
+import {genInputFiltersFromTable} from '../../utils/genInputFieldsFromTable';
+import {userTable} from "./user.table.ts";
 import {
     type PaginationInputDTO,
     paginationInputObject,
     type PaginationOutputDTO,
-    paginationOutputObject,
-} from '../../graphql/pagination';
-import {genInputFiltersFromTable} from '../../utils/genInputFieldsFromTable';
-import {userTable} from "./user.table.ts";
+    paginationOutputObject
+} from "../../graphql/objects/pagination.ts";
 
 export interface UsersInputDTO {
     pagination: PaginationInputDTO;

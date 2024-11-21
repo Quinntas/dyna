@@ -2,37 +2,19 @@ import {GraphQLSchema, parse} from 'graphql';
 import {compileQuery, isCompiledQuery} from 'graphql-jit';
 import {type CompiledQuery} from 'graphql-jit/dist/execution';
 import {IncomingMessage, ServerResponse} from 'http';
-
-export class HttpError extends Error {
-    public status: number;
-    public data: object | undefined;
-
-    constructor(status: number, message: string, data?: object) {
-        super(message);
-        this.status = status;
-        this.data = data;
-    }
-}
-
-export const notFound = new HttpError(404, 'not found');
-export const internalServerError = new HttpError(500, 'internal server error');
-
-export function jsonResponse<T extends object>(res: ServerResponse, status: number, data: T) {
-    res.statusCode = status;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify(data));
-}
+import {HttpError, internalServerError, notFound} from "./errors.ts";
+import {jsonResponse} from "./responses.ts";
+import type {Json} from "./types.ts";
 
 export function handleError(res: ServerResponse, error: Error) {
+    // TODO: move this later
+    console.error(error.message);
+
     switch (true) {
         case error instanceof HttpError:
-            return jsonResponse(res, error.status, {
-                message: error.message,
-                ...error.data,
-            });
+            return jsonResponse(res, error.status, error.data);
 
         default:
-            console.error(error.message);
             return handleError(res, internalServerError);
     }
 }
@@ -61,7 +43,7 @@ async function handleQuery(
 
     const result = await cache[query].query({}, {req}, inp.variables);
 
-    return jsonResponse(res, 200, result);
+    return jsonResponse(res, 200, result as Json);
 }
 
 function checkForValidEndpoint(url: string | undefined, endpoint: string) {
@@ -72,21 +54,31 @@ function checkForValidEndpoint(url: string | undefined, endpoint: string) {
 export function httpHandler(schema: GraphQLSchema, req: IncomingMessage, res: ServerResponse) {
     try {
         checkForValidEndpoint(req.url, '/graphql');
-    } catch (e: any) {
-        return handleError(res, e);
+    } catch (e: unknown) {
+        if (e instanceof HttpError)
+            return handleError(res, e);
+        throw e;
     }
 
     let payload = '';
 
     req.on('data', (chunk: Buffer) => {
-        payload += chunk.toString();
+        try {
+            payload += chunk.toString();
+        } catch (e: unknown) {
+            if (e instanceof HttpError)
+                return handleError(res, e);
+            throw e;
+        }
     });
 
     req.on('end', async () => {
         try {
             return await handleQuery(schema, payload, req, res);
-        } catch (e: any) {
-            return handleError(res, e);
+        } catch (e: unknown) {
+            if (e instanceof HttpError)
+                return handleError(res, e);
+            throw e
         }
     });
 }

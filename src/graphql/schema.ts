@@ -1,9 +1,10 @@
 import {buildSchema, GraphQLObjectType, GraphQLSchema} from 'graphql';
 import {readFileSync} from 'node:fs';
 import {usersResolver} from '../resolvers/users';
+import {env} from "../utils/env.ts";
 
 function getSchema(): GraphQLSchema {
-    if (process.env.NODE_ENV === 'development')
+    if (env.NODE_ENV === 'development')
         return new GraphQLSchema({
             query: new GraphQLObjectType({
                 name: 'Query',
