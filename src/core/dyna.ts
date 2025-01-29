@@ -380,7 +380,10 @@ const getNestedSelections = (fieldNode: FieldNode): Set<string> => {
     return selections;
 };
 
-export const buildQuery = (table: Table, info: GraphQLResolveInfo, whereFilters?: WhereFilterObject, args?: Record<string, any>) => {
+export const buildQuery = (
+    table: Table, info: GraphQLResolveInfo, whereFilters?: WhereFilterObject, args?: Record<string, any>,
+    limit?: number, offset?: number
+) => {
     const selections = getSelectedFields(info);
     const joins: JoinInfo[] = [];
     let selectFields: SelectField[] = buildSelectFields(table, selections);
@@ -452,7 +455,15 @@ export const buildQuery = (table: Table, info: GraphQLResolveInfo, whereFilters?
         query = query.where(and(...whereConditions));
     }
 
-    return query.limit(10); 
+    if (limit) {
+        query = query.limit(limit);
+    }
+
+    if (offset) {
+        query = query.offset(offset);
+    }
+
+    return query;
 };
 
 

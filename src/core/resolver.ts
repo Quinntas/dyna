@@ -1,8 +1,14 @@
-import {type GraphQLInputFieldConfig, GraphQLObjectType, type GraphQLResolveInfo, type ThunkObjMap,} from 'graphql';
-import {GraphQLError, GraphQLList} from "graphql/index";
+import {
+    type GraphQLFieldConfig,
+    type GraphQLInputFieldConfig,
+    GraphQLObjectType,
+    type GraphQLResolveInfo,
+    type ThunkObjMap,
+} from 'graphql';
+import {GraphQLError} from "graphql/index";
 
 export abstract class Resolver<Context, Input, Output> {
-    private readonly _output: GraphQLList<any> | GraphQLObjectType;
+    private readonly _output: GraphQLObjectType;
     private readonly _input: ThunkObjMap<GraphQLInputFieldConfig> | undefined;
 
     // TODO: fix this type
@@ -33,10 +39,14 @@ export abstract class Resolver<Context, Input, Output> {
     protected constructor(
         private readonly _name: string,
         private readonly _description: string,
-        output: GraphQLList<any> | GraphQLObjectType,
+        output: ThunkObjMap<GraphQLFieldConfig<any, any>>,
         input?: ThunkObjMap<GraphQLInputFieldConfig>,
     ) {
-        this._output = output;
+        const outputName = `${_name}Output`;
+        this._output = new GraphQLObjectType({
+            name: outputName,
+            fields: output,
+        });
         this._input = input;
     }
 

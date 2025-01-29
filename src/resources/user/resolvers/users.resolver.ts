@@ -32,7 +32,7 @@ import {db} from "../../../infra/database.ts";
 import {Resolver} from "../../../core/resolver.ts";
 import type {Context} from "../../../core/context.ts";
 import {buildQuery, nestObject} from "../../../core/dyna.ts";
-import {userTable} from "../infra/user.table.ts";
+import {type UserSelectModel, userTable} from "../infra/user.table.ts";
 
 function genWhereQuery(whereFilter: WhereFilters, col: Column, filter: unknown) {
     switch (whereFilter) {
@@ -112,8 +112,26 @@ export class UsersResolver extends Resolver<Context, UsersInputDTO, UsersOutputD
         context: Context,
         resolveInfo: GraphQLResolveInfo,
     ): Promise<UsersOutputDTO> {
-        const query = buildQuery(userTable, resolveInfo, input.where, resolveInfo.variableValues);
-        const results: Record<string, unknown>[] = await query.execute();
-        return results.map(row => nestObject(row)) as unknown as UsersOutputDTO;
+        console.log(input)
+
+        const query = buildQuery(
+            userTable,
+            resolveInfo,
+            input.where,
+            resolveInfo.variableValues,
+            input.pagination?.limit,
+            input.pagination?.offset
+        );
+
+        const results: UserSelectModel[] = await query.execute();
+
+        return {
+            data: results.map(row => nestObject(row)) as unknown as UserSelectModel,
+            pagination: {
+                nextOffset: 0,
+                total: 0,
+                hasMore: false
+            }
+        }
     }
 }
