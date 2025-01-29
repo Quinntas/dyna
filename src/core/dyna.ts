@@ -272,7 +272,6 @@ const createObjectTypes = (schema: DrizzleSchemaType): ObjectTypeBuffer => {
                     fields: () => generateFields(name, table),
                 });
             } catch (error) {
-                console.error(`Failed to create GraphQLObjectType for ${name}:`, error);
                 throw error;
             }
         }
@@ -351,11 +350,13 @@ const getForeignKeyForField = (table: Table, fieldName: string): {
 
     for (let i = 0; i < config.foreignKeys.length; i++) {
         const fk = config.foreignKeys[i];
-        const foreignTableName = getTableName(fk.reference().foreignTable);
-        const columnName = fk.reference().columns[0].name;
-        if (foreignTableName === fieldName || columnName === `${fieldName}_id`) {
+        const targetTable = fk.reference().foreignTable;
+        const targetTableName = getTableName(targetTable).toLowerCase();
+
+        if (fieldName.toLowerCase() === targetTableName.toLowerCase() ||
+            fieldName.toLowerCase() === `${targetTableName}_id`) {
             return {
-                table: fk.reference().foreignTable,
+                table: targetTable,
                 sourceColumn: fk.reference().columns[0],
                 targetColumn: fk.reference().foreignColumns[0]
             };
@@ -389,6 +390,21 @@ export const buildQuery = (
     let selectFields: SelectField[] = buildSelectFields(table, selections);
     const whereConditions: SQL[] = [];
 
+    const processRootSelection = (selection: FieldNode) => {
+        if (selection.name.value === "data") { // Handle the data wrapper
+            if (selection.selectionSet) {
+                for (const subSelection of selection.selectionSet.selections) {
+                    if (subSelection.kind === "Field") {
+                        processNestedSelections(table, subSelection);
+                    }
+                }
+            }
+        } else {
+            processNestedSelections(table, selection);
+        }
+    };
+
+
     const processNestedSelections = (currentTable: Table, fieldNode: FieldNode, parentPrefix = "") => {
         const fieldName = fieldNode.name.value;
         const foreignKey = getForeignKeyForField(currentTable, fieldName);
@@ -412,6 +428,15 @@ export const buildQuery = (
                 targetColumn: foreignKey.targetColumn,
             });
 
+            const fkColumnName = foreignKey.sourceColumn.name;
+            if (!selectFields.some(f => f.column === fkColumnName && f.table === getTableName(currentTable))) {
+                selectFields.push({
+                    table: getTableName(currentTable),
+                    column: fkColumnName,
+                    alias: parentPrefix ? `${parentPrefix}_${fkColumnName}` : fkColumnName
+                });
+            }
+
             const nestedSelectFields = buildSelectFields(foreignKey.table, nestedSelections, prefix);
             selectFields.push(...nestedSelectFields);
 
@@ -430,7 +455,7 @@ export const buildQuery = (
     if (rootSelectionSet) {
         for (const selection of rootSelectionSet.selections) {
             if (selection.kind === "Field") {
-                processNestedSelections(table, selection);
+                processRootSelection(selection);
             }
         }
     }
@@ -500,8 +525,15 @@ export const nestObject = (flatRow: Record<string, unknown>): Record<string, unk
     const removeNullObjects = (obj: any): any => {
         if (typeof obj !== 'object' || obj === null) return obj;
 
-        if ('id' in obj && obj.id === null) return null;
+        // Preserve objects with non-null ID even if other fields are null
+        if ('id' in obj && obj.id !== null) {
+            Object.keys(obj).forEach(k => {
+                obj[k] = removeNullObjects(obj[k]);
+            });
+            return obj;
+        }
 
+        // Remove objects with null ID
         Object.keys(obj).forEach(k => {
             obj[k] = removeNullObjects(obj[k]);
             if (obj[k] === null) delete obj[k];
@@ -558,5 +590,3 @@ export const generateResolvers = <T extends DrizzleSchemaType>(schema: T) => {
 
     return resolvers;
 };
-
-

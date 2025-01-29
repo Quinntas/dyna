@@ -1,9 +1,9 @@
 import {Resolver} from "../../../core/resolver.ts";
 import type {Context} from "../../../core/context.ts";
 import {buildQuery, nestObject} from "../../../core/dyna.ts";
-import {type UserSelectModel, userTable} from "../../user/infra/user.table.ts";
+import {type UserSelectModel} from "../../user/infra/user.table.ts";
 import {sessionInput, type SessionInputDTO, sessionOutput, type SessionOutputDTO} from "./sessions.dto.ts";
-import type {SessionSelectModel} from "../infra/session.table.ts";
+import {type SessionSelectModel, sessionTable} from "../infra/session.table.ts";
 import type {GraphQLResolveInfo} from "graphql";
 
 export class SessionsResolver extends Resolver<Context, SessionInputDTO, SessionOutputDTO> {
@@ -17,10 +17,8 @@ export class SessionsResolver extends Resolver<Context, SessionInputDTO, Session
         context: Context,
         resolveInfo: GraphQLResolveInfo,
     ): Promise<SessionOutputDTO> {
-        console.log(input)
-
         const query = buildQuery(
-            userTable,
+            sessionTable,
             resolveInfo,
             input.where,
             resolveInfo.variableValues,
@@ -29,8 +27,6 @@ export class SessionsResolver extends Resolver<Context, SessionInputDTO, Session
         );
 
         const results: UserSelectModel[] = await query.execute();
-
-        console.log(results)
 
         return {
             data: results.map(row => nestObject(row)) as unknown as SessionSelectModel,
