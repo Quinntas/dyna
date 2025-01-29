@@ -1,7 +1,7 @@
 import {GraphQLError, type GraphQLResolveInfo, type SelectionNode} from 'graphql/index';
 import {Kind} from 'graphql/language';
-import {tables} from "../infra/database.ts";
 import type {Column} from "drizzle-orm";
+import {tables} from "../graphql/tables.ts";
 
 type ParsedGraphQLResolveInfo = {
     [key: string]: Column | ParsedGraphQLResolveInfo;

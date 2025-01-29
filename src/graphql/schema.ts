@@ -1,7 +1,8 @@
 import {buildSchema, GraphQLObjectType, GraphQLSchema} from 'graphql';
 import {readFileSync} from 'node:fs';
-import {usersResolver} from '../resolvers/users';
 import {env} from "../utils/env.ts";
+import {usersResolver} from "../resources/user/resolvers";
+
 
 function getSchema(): GraphQLSchema {
     if (env.NODE_ENV === 'development')
@@ -9,7 +10,7 @@ function getSchema(): GraphQLSchema {
             query: new GraphQLObjectType({
                 name: 'Query',
                 fields: {
-                    ...usersResolver.type,
+                    ...usersResolver.type
                 },
             }),
         });

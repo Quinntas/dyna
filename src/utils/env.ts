@@ -1,6 +1,4 @@
-import {config} from "dotenv";
-
-config()
+import "dotenv/config"
 
 interface Env {
     DATABASE_URL: string
