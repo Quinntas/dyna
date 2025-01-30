@@ -7,7 +7,7 @@ import {
 import {graphqlSchemaData} from "../../../graphql/schemaData.ts";
 import type {SessionSelectModel} from "../infra/session.table.ts";
 import {GraphQLList} from "graphql";
-import type {WhereFilterObject} from "../../../core/types.ts";
+import type {WhereFilterObject} from "../../../core/dyna.ts";
 
 export interface SessionInputDTO {
     where: WhereFilterObject

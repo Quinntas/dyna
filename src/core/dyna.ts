@@ -80,7 +80,7 @@ type WhereFilters =
     | "inArray" | "notInArray" | "isNull" | "isNotNull"
     | "like" | "notLike" | "ilike" | "notIlike";
 
-type WhereFilterObject = Record<string, Partial<Record<WhereFilters, unknown>>>;
+export type WhereFilterObject = Record<string, Partial<Record<WhereFilters, unknown>>>;
 
 const objectTypeBuffer: ObjectTypeBuffer = {};
 const filterTypeBuffer: FilterTypeBuffer = {};

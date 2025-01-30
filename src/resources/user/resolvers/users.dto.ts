@@ -7,7 +7,7 @@ import {
     type PaginationOutputDTO,
     paginationOutputObject
 } from "../../../graphql/objects/pagination.ts";
-import type {WhereFilterObject} from "../../../core/types.ts";
+import type {WhereFilterObject} from "../../../core/dyna.ts";
 
 export interface UsersInputDTO {
     where: WhereFilterObject
