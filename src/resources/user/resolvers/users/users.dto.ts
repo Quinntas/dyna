@@ -1,13 +1,14 @@
-import {graphqlSchemaData} from "../../../graphql/schemaData.ts";
-import {GraphQLList} from "graphql";
-import type {UserSelectModel} from "../infra/user.table.ts";
+import type {WhereFilterObject} from "../../../../core/dyna.ts";
 import {
     type PaginationInputDTO,
     paginationInputObject,
     type PaginationOutputDTO,
     paginationOutputObject
-} from "../../../graphql/objects/pagination.ts";
-import type {WhereFilterObject} from "../../../core/dyna.ts";
+} from "../../../../graphql/objects/pagination.ts";
+import type {UserSelectModel} from "../../infra/user.table.ts";
+import {graphqlSchemaData} from "../../../../graphql/schemaData.ts";
+import {GraphQLList} from "graphql";
+
 
 export interface UsersInputDTO {
     where: WhereFilterObject

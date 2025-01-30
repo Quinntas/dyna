@@ -571,9 +571,10 @@ export function generateSchemaData<T extends DrizzleSchemaType>(schema: T) {
 
 export function parseGraphQLResolveInfo(
     baseObjectName: keyof typeof tables,
-    maxDepth: number,
     info: GraphQLResolveInfo,
     userRole: Roles,
+    maxDepth: number = 5,
+    rootBase: string = "data"
 ): QueryAnalysisResult | null {
     const fieldNodes = info.fieldNodes;
     if (!fieldNodes[0]?.selectionSet?.selections) return null;
@@ -600,7 +601,7 @@ export function parseGraphQLResolveInfo(
     const baseWhereArg = getWhereArgument(fieldNodes[0], info.variableValues);
 
     for (const selection of fieldNodes[0].selectionSet.selections) {
-        if (selection.kind === Kind.FIELD && selection.name.value === 'data' && selection.selectionSet) {
+        if (selection.kind === Kind.FIELD && selection.name.value === rootBase && selection.selectionSet) {
             stack.push({
                 objectName: baseObjectName,
                 selections: selection.selectionSet.selections,

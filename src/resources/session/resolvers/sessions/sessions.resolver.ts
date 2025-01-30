@@ -1,11 +1,12 @@
-import {Resolver} from "../../../core/resolver.ts";
-import type {Context} from "../../../core/context.ts";
-import {buildQuery, parseGraphQLResolveInfo} from "../../../core/dyna.ts";
+import {Resolver} from "../../../../core/resolver.ts";
+import type {Context} from "../../../../core/context.ts";
 import {sessionInput, type SessionInputDTO, sessionOutput, type SessionOutputDTO} from "./sessions.dto.ts";
-import {type SessionSelectModel, sessionTable} from "../infra/session.table.ts";
 import type {GraphQLResolveInfo} from "graphql";
+import {buildQuery, parseGraphQLResolveInfo} from "../../../../core/dyna.ts";
+import {type SessionSelectModel, sessionTable} from "../../infra/session.table.ts";
 
 export class SessionsResolver extends Resolver<Context, SessionInputDTO, SessionOutputDTO> {
+
     constructor() {
         super('Session', 'List sessions', sessionOutput, sessionInput);
     }
@@ -18,7 +19,7 @@ export class SessionsResolver extends Resolver<Context, SessionInputDTO, Session
     ): Promise<SessionOutputDTO> {
         const query = buildQuery(
             sessionTable,
-            parseGraphQLResolveInfo('sessions', 10, resolveInfo, 'admin'),
+            parseGraphQLResolveInfo('sessions', resolveInfo, 'admin'),
             input.pagination
         );
 
