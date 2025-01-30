@@ -5,9 +5,9 @@ import {
     paginationOutputObject
 } from "../../../graphql/objects/pagination.ts";
 import {graphqlSchemaData} from "../../../graphql/schemaData.ts";
-import type {WhereFilterObject} from "../../user/resolvers/users.dto.ts";
 import type {SessionSelectModel} from "../infra/session.table.ts";
 import {GraphQLList} from "graphql";
+import type {WhereFilterObject} from "../../../core/types.ts";
 
 export interface SessionInputDTO {
     where: WhereFilterObject
