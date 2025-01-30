@@ -1,8 +1,8 @@
 import {buildSchema, GraphQLObjectType, GraphQLSchema} from 'graphql';
 import {readFileSync} from 'node:fs';
 import {env} from "../utils/env.ts";
-import {usersResolver} from "../resources/user/resolvers/users";
-import {sessionsResolver} from "../resources/session/resolvers/sessions";
+import {usersResolver} from "../modules/user/resolvers/users";
+import {sessionsResolver} from "../modules/session/resolvers/sessions";
 
 
 function getSchema(): GraphQLSchema {

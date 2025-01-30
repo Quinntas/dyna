@@ -1,7 +1,7 @@
 import {pgTable, serial, varchar} from "drizzle-orm/pg-core";
 import {baseColumns} from "../../../infra/baseColumns.ts";
 import {userTable} from "../../user/infra/user.table.ts";
-import type {InferInsertModel, InferSelectModel} from "drizzle-orm";
+import type {InferSelectModel} from "drizzle-orm";
 
 export const sessionTable = pgTable("sessions", {
     ...baseColumns,
@@ -11,4 +11,3 @@ export const sessionTable = pgTable("sessions", {
 })
 
 export type SessionSelectModel = InferSelectModel<typeof sessionTable>;
-export type SessionInsertModel = InferInsertModel<typeof sessionTable>;

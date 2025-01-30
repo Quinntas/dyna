@@ -1,16 +1,20 @@
-import type {UserSelectModel} from "../resources/user/infra/user.table.ts";
+import type {UserSelectModel} from "../modules/user/infra/user.table.ts";
 import {tables} from "../graphql/tables.ts";
-import type {SessionSelectModel} from "../resources/session/infra/session.table.ts";
+import type {SessionSelectModel} from "../modules/session/infra/session.table.ts";
 
 export type RolePermissions = {
     allowedTables: Set<string>;
     allowedColumns: Map<
         '*' |
-        keyof typeof tables, Set<keyof UserSelectModel | keyof SessionSelectModel | '*'>
-    >;
+        keyof typeof tables, Set<
+        "*" |
+        keyof UserSelectModel |
+        keyof SessionSelectModel
+    >>;
     allowedRelations?: Map<
         '*' |
-        keyof typeof tables, Set<'*' | keyof typeof tables>
+        keyof typeof tables, Set<'*' |
+        keyof typeof tables>
     >;
 };
 
