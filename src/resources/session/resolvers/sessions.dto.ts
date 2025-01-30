@@ -24,13 +24,13 @@ export const sessionInput = {
         type: paginationInputObject
     },
     where: {
-        type: graphqlSchemaData.filters.Session
+        type: graphqlSchemaData.filters.session
     }
 }
 
 export const sessionOutput = {
     data: {
-        type: new GraphQLList(graphqlSchemaData.types.Session)
+        type: new GraphQLList(graphqlSchemaData.types.session)
     },
     pagination: {
         type: paginationOutputObject

@@ -1,71 +1,114 @@
-import {GraphQLError, type GraphQLResolveInfo, type SelectionNode} from 'graphql/index';
+import {GraphQLError, type GraphQLResolveInfo, type SelectionNode} from 'graphql';
 import {Kind} from 'graphql/language';
 import type {Column} from "drizzle-orm";
 import {tables} from "../graphql/tables.ts";
+
+type QueryAnalysisResult = {
+    obj: ParsedGraphQLResolveInfo;
+    depth: number;
+    resources: {
+        tables: Set<string>;
+        columns: Map<string, Set<string>>;
+    };
+};
 
 type ParsedGraphQLResolveInfo = {
     [key: string]: Column | ParsedGraphQLResolveInfo;
 };
 
-function getPropertiesFromSelectionSet(
-    objectName: string,
-    selections: readonly SelectionNode[],
-    depth: number,
-) {
-    let obj: ParsedGraphQLResolveInfo = {};
-    for (let i = 0; i < selections.length; i++) {
-        const val = selections[i];
-        if (val.kind !== Kind.FIELD) continue;
-        if (!val.selectionSet) {
-            const table = tables[objectName];
-            if (!table) throw new GraphQLError(`Table ${table} not found`);
-            Object.assign(obj, {
-                // @ts-ignore - TODO: fix this
-                [selections[i].name.value]: table[selections[i].name.value],
-            });
-        } else {
-            const res = getPropertiesFromSelectionSet(
-                val.name.value,
-                val.selectionSet!.selections,
-                depth + 1,
-            );
-            obj[val.name.value] = res.obj;
-            depth = res.depth;
-        }
-    }
-    return {
-        obj,
-        depth,
-    };
-}
-
 export function parseGraphQLResolveInfo(
     baseObjectName: string,
     maxDepth: number,
-    data: GraphQLResolveInfo,
-) {
-    const len: number = data.fieldNodes[0].selectionSet?.selections.length || 0;
+    info: GraphQLResolveInfo,
+): QueryAnalysisResult | null {
+    const fieldNodes = info.fieldNodes;
+    if (!fieldNodes[0]?.selectionSet?.selections) return null;
 
-    if (len === 0) return null;
+    const stack: Array<{
+        objectName: string;
+        selections: readonly SelectionNode[];
+        currentDepth: number;
+        parentObj: ParsedGraphQLResolveInfo;
+    }> = [];
 
-    let baseSelectionSet = null;
+    const result: QueryAnalysisResult = {
+        obj: {},
+        depth: 0,
+        resources: {
+            tables: new Set<string>(),
+            columns: new Map<string, Set<string>>(),
+            joinTables: new Set<string>(),
+        },
+    };
 
-    for (let i = 0; i < len; i++) {
-        const val = data.fieldNodes[0].selectionSet!.selections[i];
-        if (!val) continue;
-        if (val.kind !== Kind.FIELD) continue;
-        if (val.name.value != 'data') continue;
-        baseSelectionSet = val;
+    // Initialize stack with base selections
+    for (const selection of fieldNodes[0].selectionSet.selections) {
+        if (selection.kind === Kind.FIELD && selection.name.value === 'data' && selection.selectionSet) {
+            stack.push({
+                objectName: baseObjectName,
+                selections: selection.selectionSet.selections,
+                currentDepth: 1,
+                parentObj: result.obj,
+            });
+            result.resources.tables.add(baseObjectName);
+            break;
+        }
     }
 
-    if (!baseSelectionSet) return null;
-    const subSelectionSet = baseSelectionSet.selectionSet;
+    while (stack.length > 0) {
+        const {objectName, selections, currentDepth, parentObj} = stack.pop()!;
+        const table = tables[objectName];
 
-    if (!subSelectionSet) return null;
-    const res = getPropertiesFromSelectionSet(baseObjectName, subSelectionSet.selections, 1);
+        if (!table) {
+            throw new GraphQLError(`Table ${objectName} not found`);
+        }
 
-    if (res.depth > maxDepth)
-        throw new GraphQLError(`Max depth exceeded. Max depth is ${maxDepth}`);
+        // Update max depth tracking
+        if (currentDepth > result.depth) {
+            result.depth = currentDepth;
+        }
 
-    return res.obj;
+        // Check depth limit before processing
+        if (currentDepth > maxDepth) {
+            throw new GraphQLError(`Max depth of ${maxDepth} exceeded`);
+        }
+
+        for (const selection of selections) {
+            if (selection.kind !== Kind.FIELD) continue;
+
+            const fieldName = selection.name.value;
+            const column = table[fieldName as keyof typeof table];
+
+            if (selection.selectionSet) {
+                // Handle nested resource
+                const nestedObj: ParsedGraphQLResolveInfo = {};
+                parentObj[fieldName] = nestedObj;
+
+                // Track joined tables
+                const joinedTable = tables[fieldName];
+                if (joinedTable) {
+                    result.resources.tables.add(fieldName);
+                    result.resources.joinTables.add(fieldName);
+                }
+
+                stack.push({
+                    objectName: fieldName,
+                    selections: selection.selectionSet.selections,
+                    currentDepth: currentDepth + 1,
+                    parentObj: nestedObj,
+                });
+            } else if (column) {
+                // Track column usage
+                if (!result.resources.columns.has(objectName)) {
+                    result.resources.columns.set(objectName, new Set<string>());
+                }
+                result.resources.columns.get(objectName)!.add(fieldName);
+
+                // Add column to result object
+                parentObj[fieldName] = column as Column;
+            }
+        }
+    }
+
+    return result.depth > 0 ? result : null;
 }

@@ -137,16 +137,16 @@ const newGraphQlFilterObject = (objectName: string, colProps: Column, prefix = '
 
 const genInputFiltersFromTable = (objectName: string, table: Table, prefix = '', extraFields: Record<string, GraphQLInputFieldConfig> = {}): GraphQLInputObjectType => {
     const filterName = `${prefix}${objectName}Filters`;
-    if (columnFilterTypeBuffer[filterName]) return columnFilterTypeBuffer[filterName];
+    if (filterTypeBuffer[filterName]) return filterTypeBuffer[filterName];
 
     const filters: Record<string, GraphQLInputFieldConfig> = {};
     const columns = getTableColumns(table);
 
     for (const columnName in columns) {
-        filters[columnName] = {type: newGraphQlFilterObject(objectName, columns[columnName], prefix)};
+        filters[columnName] = {type: newGraphQlFilterObject(objectName, columns[columnName], '')};
     }
 
-    return columnFilterTypeBuffer[filterName] = new GraphQLInputObjectType({
+    return filterTypeBuffer[filterName] = new GraphQLInputObjectType({
         name: filterName,
         description: `Filters for ${objectName} object`,
         fields: {...filters, ...extraFields},
@@ -240,45 +240,27 @@ const parseWhereFilters = (table: Table, filters?: WhereFilterObject): SQL | und
 };
 
 
-const buildSelectFields = (table: Table, selections: Set<string>, prefix = ""): SelectField[] => {
-    const fields: SelectField[] = [];
-    const tableName = getTableName(table);
-
-    fields.push({table: tableName, column: "id", alias: prefix ? `${prefix}_id` : "id"});
-
-    selections.forEach(field => {
-        if (table[field as keyof typeof table]) {
-            fields.push({
-                table: tableName,
-                column: field,
-                alias: prefix ? `${prefix}_${field}` : field,
-            });
-        }
-    });
-
-    return fields;
-};
-
-
 const createObjectTypes = (schema: DrizzleSchemaType): ObjectTypeBuffer => {
     const sortedTables = sortTablesByDependencies(schema);
 
-    for (let i = 0; i < sortedTables.length; i++) {
-        const [name, table] = sortedTables[i];
-        if (!objectTypeBuffer[name]) {
-            try {
-                objectTypeBuffer[name] = new GraphQLObjectType({
-                    name: `${name}Object`,
-                    fields: () => generateFields(name, table),
-                });
-            } catch (error) {
-                throw error;
-            }
+    for (const [name, table] of sortedTables) {
+        const baseFilterName = `${name}Filters`;
+        if (!filterTypeBuffer[baseFilterName]) {
+            filterTypeBuffer[baseFilterName] = genInputFiltersFromTable(name, table);
         }
     }
+
+    for (const [name, table] of sortedTables) {
+        if (!objectTypeBuffer[name]) {
+            objectTypeBuffer[name] = new GraphQLObjectType({
+                name: `${name}Object`,
+                fields: () => generateFields(name, table),
+            });
+        }
+    }
+
     return objectTypeBuffer;
 };
-
 const generateFields = (name: string, table: Table): Record<string, GraphQLFieldConfig<unknown, unknown>> => {
     const config = getTableConfig(table);
     const fkMap = new Map<string, ForeignKeyInfo>();
@@ -387,16 +369,36 @@ export const buildQuery = (
 ) => {
     const selections = getSelectedFields(info);
     const joins: JoinInfo[] = [];
-    let selectFields: SelectField[] = buildSelectFields(table, selections);
+    const selectFields: SelectField[] = [];
+    const existingAliases = new Set<string>();
     const whereConditions: SQL[] = [];
+    const foreignKeyCache = new Map<string, ReturnType<typeof getForeignKeyForField>>();
+
+    const addField = ({table: tableName, column, alias}: SelectField) => {
+        const fieldAlias = alias || column;
+        if (!existingAliases.has(fieldAlias)) {
+            existingAliases.add(fieldAlias);
+            selectFields.push({table: tableName, column, alias: fieldAlias});
+        }
+    };
+
+    const memoizedGetForeignKeyForField = (currentTable: Table, fieldName: string) => {
+        const tableName = getTableName(currentTable);
+        const key = `${tableName}:${fieldName}`;
+        if (foreignKeyCache.has(key)) return foreignKeyCache.get(key)!;
+
+        const result = getForeignKeyForField(currentTable, fieldName);
+        foreignKeyCache.set(key, result);
+        return result;
+    };
 
     const processRootSelection = (selection: FieldNode) => {
-        if (selection.name.value === "data") { // Handle the data wrapper
-            if (selection.selectionSet) {
-                for (const subSelection of selection.selectionSet.selections) {
-                    if (subSelection.kind === "Field") {
-                        processNestedSelections(table, subSelection);
-                    }
+        if (selection.name.value === "data" && selection.selectionSet) {
+            const selections = selection.selectionSet.selections;
+            for (let i = 0; i < selections.length; i++) {
+                const subSelection = selections[i];
+                if (subSelection.kind === "Field") {
+                    processNestedSelections(table, subSelection);
                 }
             }
         } else {
@@ -404,56 +406,64 @@ export const buildQuery = (
         }
     };
 
-
     const processNestedSelections = (currentTable: Table, fieldNode: FieldNode, parentPrefix = "") => {
         const fieldName = fieldNode.name.value;
-        const foreignKey = getForeignKeyForField(currentTable, fieldName);
+        const foreignKey = memoizedGetForeignKeyForField(currentTable, fieldName);
+        if (!foreignKey) return;
 
-        if (foreignKey) {
-            const nestedSelections = getNestedSelections(fieldNode);
-            const prefix = parentPrefix ? `${parentPrefix}_${fieldName}` : fieldName;
+        const nestedSelections = getNestedSelections(fieldNode);
+        const prefix = parentPrefix ? `${parentPrefix}_${fieldName}` : fieldName;
+        const currentTableName = getTableName(currentTable);
 
-            const nestedWhereArg = fieldNode.arguments?.find(arg => arg.name.value === "where");
-            const nestedWhereValue = nestedWhereArg?.value.kind === "Variable" ? args?.[nestedWhereArg.value.name.value] : undefined;
+        const nestedWhereArg = fieldNode.arguments?.find(arg => arg.name.value === "where");
+        const nestedWhereValue = nestedWhereArg?.value.kind === "Variable"
+            ? args?.[nestedWhereArg.value.name.value]
+            : undefined;
 
-            if (nestedWhereValue) {
-                const nestedConditions = parseWhereFilters(foreignKey.table, nestedWhereValue);
-                if (nestedConditions) whereConditions.push(nestedConditions);
-            }
+        if (nestedWhereValue) {
+            const nestedConditions = parseWhereFilters(foreignKey.table, nestedWhereValue);
+            if (nestedConditions) whereConditions.push(nestedConditions);
+        }
 
-            joins.push({
-                sourceTable: currentTable,
-                targetTable: foreignKey.table,
-                sourceColumn: foreignKey.sourceColumn,
-                targetColumn: foreignKey.targetColumn,
-            });
+        joins.push({
+            sourceTable: currentTable,
+            targetTable: foreignKey.table,
+            sourceColumn: foreignKey.sourceColumn,
+            targetColumn: foreignKey.targetColumn,
+        });
 
-            const fkColumnName = foreignKey.sourceColumn.name;
-            if (!selectFields.some(f => f.column === fkColumnName && f.table === getTableName(currentTable))) {
-                selectFields.push({
-                    table: getTableName(currentTable),
-                    column: fkColumnName,
-                    alias: parentPrefix ? `${parentPrefix}_${fkColumnName}` : fkColumnName
-                });
-            }
+        const fkColumnName = foreignKey.sourceColumn.name;
+        addField({
+            table: currentTableName,
+            column: fkColumnName,
+            alias: parentPrefix ? `${parentPrefix}_${fkColumnName}` : fkColumnName
+        });
 
-            const nestedSelectFields = buildSelectFields(foreignKey.table, nestedSelections, prefix);
-            selectFields.push(...nestedSelectFields);
+        const nestedFields = buildSelectFields(foreignKey.table, nestedSelections, prefix);
+        for (let i = 0; i < nestedFields.length; i++) {
+            addField(nestedFields[i]);
+        }
 
-            const selectionSet = fieldNode.selectionSet;
-            if (selectionSet) {
-                for (const selection of selectionSet.selections) {
-                    if (selection.kind === "Field") {
-                        processNestedSelections(foreignKey.table, selection, prefix);
-                    }
+        const selectionSet = fieldNode.selectionSet?.selections;
+        if (selectionSet) {
+            for (let i = 0; i < selectionSet.length; i++) {
+                const selection = selectionSet[i];
+                if (selection.kind === "Field") {
+                    processNestedSelections(foreignKey.table, selection, prefix);
                 }
             }
         }
     };
 
-    const rootSelectionSet = info.fieldNodes[0].selectionSet;
+    const initialFields = buildSelectFields(table, selections);
+    for (let i = 0; i < initialFields.length; i++) {
+        addField(initialFields[i]);
+    }
+
+    const rootSelectionSet = info.fieldNodes[0].selectionSet?.selections;
     if (rootSelectionSet) {
-        for (const selection of rootSelectionSet.selections) {
+        for (let i = 0; i < rootSelectionSet.length; i++) {
+            const selection = rootSelectionSet[i];
             if (selection.kind === "Field") {
                 processRootSelection(selection);
             }
@@ -461,88 +471,135 @@ export const buildQuery = (
     }
 
     const selectObj: Record<string, SQL> = {};
-    selectFields.forEach(({table: tableName, column, alias}) => {
-        // @formatter:off
-        selectObj[alias || column] = sql`${sql.identifier(tableName)}.${sql.identifier(column)}`;
-    });
+    for (let i = 0; i < selectFields.length; i++) {
+        const {table: tableName, column, alias} = selectFields[i];
+        selectObj[alias || column] = sql`${sql.identifier(tableName)}
+        .
+        ${sql.identifier(column)}`;
+    }
 
-    let query:any = db.select(selectObj).from(table);
-    joins.forEach(({targetTable, sourceColumn, targetColumn}) => {
+    let query: any = db.select(selectObj).from(table);
+
+    for (let i = 0; i < joins.length; i++) {
+        const {targetTable, sourceColumn, targetColumn} = joins[i];
         query = query.leftJoin(targetTable, eq(sourceColumn, targetColumn));
-    });
+    }
 
     if (whereFilters) {
         const mainConditions = parseWhereFilters(table, whereFilters);
         if (mainConditions) whereConditions.push(mainConditions);
     }
+    if (whereConditions.length) query = query.where(and(...whereConditions));
 
-    if (whereConditions.length) {
-        query = query.where(and(...whereConditions));
-    }
-
-    if (limit) {
-        query = query.limit(limit);
-    }
-
-    if (offset) {
-        query = query.offset(offset);
-    }
+    if (limit) query = query.limit(limit);
+    if (offset) query = query.offset(offset);
 
     return query;
 };
 
+// Optimized helper function
+const buildSelectFields = (table: Table, selections: Set<string>, prefix = ""): SelectField[] => {
+    const fields: SelectField[] = [];
+    const tableName = getTableName(table);
+    const idAlias = prefix ? `${prefix}_id` : "id";
+
+    fields.push({table: tableName, column: "id", alias: idAlias});
+
+    const selectionArray = Array.from(selections);
+    for (let i = 0; i < selectionArray.length; i++) {
+        const field = selectionArray[i];
+        if (table[field as keyof typeof table]) {
+            fields.push({
+                table: tableName,
+                column: field,
+                alias: prefix ? `${prefix}_${field}` : field,
+            });
+        }
+    }
+
+    return fields;
+};
 
 const getFilterType = (name: string, table: Table, prefix = ""): GraphQLInputObjectType => {
-    const filterName = `${prefix}${name}Filters`;
     const baseFilterName = `${name}Filters`;
+    const prefixedFilterName = `${prefix}${name}Filters`;
 
-    if (filterTypeBuffer[filterName]) {
-        return filterTypeBuffer[filterName];
-    }
-    if (prefix === "Nested" && filterTypeBuffer[baseFilterName]) {
+    if (filterTypeBuffer[baseFilterName]) {
         return filterTypeBuffer[baseFilterName];
     }
-    return filterTypeBuffer[filterName] = genInputFiltersFromTable(name, table, prefix);
+
+    if (!filterTypeBuffer[prefixedFilterName]) {
+        filterTypeBuffer[prefixedFilterName] = genInputFiltersFromTable(name, table, prefix);
+    }
+
+    return filterTypeBuffer[prefixedFilterName];
 };
 
 export const nestObject = (flatRow: Record<string, unknown>): Record<string, unknown> => {
     const result: Record<string, unknown> = {};
+    const nodeMap = new Map<string, Record<string, unknown>>();
+    nodeMap.set('', result);
 
     for (const [key, value] of Object.entries(flatRow)) {
         const parts = key.split('_');
-        let current: any = result;
+        let currentPath = '';
+        let currentLevel = result;
+
         for (let i = 0; i < parts.length - 1; i++) {
             const part = parts[i];
-            if (!current[part]) {
-                current[part] = {};
+            const newPath = currentPath ? `${currentPath}_${part}` : part;
+
+            if (!nodeMap.has(newPath)) {
+                const newLevel: Record<string, unknown> = {};
+                nodeMap.set(newPath, newLevel);
+                currentLevel[part] = newLevel;
             }
-            current = current[part];
+
+            currentLevel = nodeMap.get(newPath)!;
+            currentPath = newPath;
         }
-        const lastPart = parts[parts.length - 1];
-        current[lastPart] = value;
+
+        const prop = parts[parts.length - 1];
+        currentLevel[prop] = value;
     }
 
-    const removeNullObjects = (obj: any): any => {
-        if (typeof obj !== 'object' || obj === null) return obj;
+    const stack: Array<[Record<string, unknown>, string[]]> = [[result, []]];
+    const removalQueue: Array<[string[], string]> = [];
 
-        // Preserve objects with non-null ID even if other fields are null
-        if ('id' in obj && obj.id !== null) {
-            Object.keys(obj).forEach(k => {
-                obj[k] = removeNullObjects(obj[k]);
-            });
-            return obj;
+    while (stack.length > 0) {
+        const [node, path] = stack.pop()!;
+        let hasValidContent = false;
+        let hasId = false;
+
+        // Check for ID presence first
+        if ('id' in node && node.id !== null) {
+            hasId = true;
+            hasValidContent = true;
         }
 
-        // Remove objects with null ID
-        Object.keys(obj).forEach(k => {
-            obj[k] = removeNullObjects(obj[k]);
-            if (obj[k] === null) delete obj[k];
-        });
+        for (const [key, value] of Object.entries(node)) {
+            if (typeof value === 'object' && value !== null) {
+                stack.push([value as Record<string, unknown>, [...path, key]]);
+                hasValidContent = true;
+            } else if (value !== null) {
+                hasValidContent = true;
+            }
+        }
 
-        return Object.keys(obj).length === 0 ? null : obj;
-    };
+        if (!hasValidContent && !hasId) {
+            removalQueue.push([path, path[path.length - 1]]);
+        }
+    }
 
-    return removeNullObjects(result) as Record<string, unknown>;
+    for (const [path, key] of removalQueue) {
+        if (path.length === 0) continue;
+
+        const parentPath = path.slice(0, -1).join('_');
+        const parent = nodeMap.get(parentPath) || result;
+        delete parent[key];
+    }
+
+    return result;
 };
 
 export function generateSchemaData<T extends DrizzleSchemaType>(schema: T) {
@@ -566,27 +623,3 @@ export function generateSchemaData<T extends DrizzleSchemaType>(schema: T) {
         filters
     }
 }
-
-export const generateResolvers = <T extends DrizzleSchemaType>(schema: T) => {
-    // @ts-expect-error asd
-    const resolvers: Record<keyof T, GraphQLFieldConfig<null, unknown>> = {};
-    createObjectTypes(schema);
-
-    for (const name in schema) {
-        const table = schema[name];
-        const objectType = objectTypeBuffer[name];
-        if (!objectType) throw new Error(`GraphQL type for ${name} is undefined.`);
-
-        resolvers[name] = {
-            type: new GraphQLList(objectType),
-            args: {where: {type: getFilterType(name, table)}},
-            resolve: async (_source, args, _context, info) => {
-                const query = buildQuery(table, info, args.where, info.variableValues);
-                const results:Record<string, unknown>[] = await query.execute();
-                return results.map(row => nestObject(row))
-            },
-        };
-    }
-
-    return resolvers;
-};
