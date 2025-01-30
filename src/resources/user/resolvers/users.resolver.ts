@@ -112,7 +112,6 @@ export class UsersResolver extends Resolver<Context, UsersInputDTO, UsersOutputD
         context: Context,
         resolveInfo: GraphQLResolveInfo,
     ): Promise<UsersOutputDTO> {
-        console.log(input)
 
         const query = buildQuery(
             userTable,

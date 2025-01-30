@@ -5,6 +5,7 @@ import {type UserSelectModel} from "../../user/infra/user.table.ts";
 import {sessionInput, type SessionInputDTO, sessionOutput, type SessionOutputDTO} from "./sessions.dto.ts";
 import {type SessionSelectModel, sessionTable} from "../infra/session.table.ts";
 import type {GraphQLResolveInfo} from "graphql";
+import {parseGraphQLResolveInfo} from "../../../utils/parseGraphqlResolveInfo.ts";
 
 export class SessionsResolver extends Resolver<Context, SessionInputDTO, SessionOutputDTO> {
     constructor() {
@@ -17,6 +18,8 @@ export class SessionsResolver extends Resolver<Context, SessionInputDTO, Session
         context: Context,
         resolveInfo: GraphQLResolveInfo,
     ): Promise<SessionOutputDTO> {
+        console.dir(parseGraphQLResolveInfo('sessions', 10, resolveInfo, 'admin'), {depth: 5})
+
         const query = buildQuery(
             sessionTable,
             resolveInfo,

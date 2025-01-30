@@ -2,8 +2,9 @@ import {GraphQLError, type GraphQLResolveInfo, type SelectionNode} from 'graphql
 import {Kind} from 'graphql/language';
 import type {Column} from "drizzle-orm";
 import {tables} from "../graphql/tables.ts";
+import {rolePermissions, type Roles} from "../infra/rbac.ts";
 
-type QueryAnalysisResult = {
+export type QueryAnalysisResult = {
     obj: ParsedGraphQLResolveInfo;
     depth: number;
     resources: {
@@ -12,14 +13,15 @@ type QueryAnalysisResult = {
     };
 };
 
-type ParsedGraphQLResolveInfo = {
+export type ParsedGraphQLResolveInfo = {
     [key: string]: Column | ParsedGraphQLResolveInfo;
 };
 
 export function parseGraphQLResolveInfo(
-    baseObjectName: string,
+    baseObjectName: keyof typeof tables,
     maxDepth: number,
     info: GraphQLResolveInfo,
+    userRole: Roles,
 ): QueryAnalysisResult | null {
     const fieldNodes = info.fieldNodes;
     if (!fieldNodes[0]?.selectionSet?.selections) return null;
@@ -110,5 +112,38 @@ export function parseGraphQLResolveInfo(
         }
     }
 
+    const authError = authorizeQuery(result.resources, userRole);
+
+    if (authError)
+        throw authError;
+
     return result.depth > 0 ? result : null;
+}
+
+function authorizeQuery(resources: QueryAnalysisResult['resources'], role: Roles): GraphQLError | null {
+    const permissions = rolePermissions[role]
+
+    for (const table of resources.tables) {
+        if (!permissions.allowedTables.has('*') && !permissions.allowedTables.has(table)) {
+            return new GraphQLError(`Unauthorized access to table: ${table}`);
+        }
+    }
+
+    for (const [table, columns] of resources.columns) {
+        const allowedColumns = permissions.allowedColumns.get(table) || permissions.allowedColumns.get('*');
+
+        if (!allowedColumns) {
+            return new GraphQLError(`Unauthorized access to table: ${table}`);
+        }
+
+        if (!allowedColumns.has('*')) {
+            for (const column of columns) {
+                if (!allowedColumns.has(column)) {
+                    return new GraphQLError(`Unauthorized access to column: ${table}.${column}`);
+                }
+            }
+        }
+    }
+
+    return null;
 }

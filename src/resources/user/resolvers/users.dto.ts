@@ -42,13 +42,13 @@ export const usersInput = {
         type: paginationInputObject
     },
     where: {
-        type: graphqlSchemaData.filters.user
+        type: graphqlSchemaData.filters.users
     }
 }
 
 export const usersOutput = {
     data: {
-        type: new GraphQLList(graphqlSchemaData.types.user)
+        type: new GraphQLList(graphqlSchemaData.types.users)
     },
     pagination: {
         type: paginationOutputObject
