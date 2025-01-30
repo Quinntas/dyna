@@ -1,16 +1,31 @@
-# dyna
+# Dyna
 
-To install dependencies:
+Dyna is a graphql server that uses Drizzle schemas to generate the graphql schema and resolvers.
+
+## Getting Started
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/en/download/) (version 16.0.0 or higher)
+
+### Installation
 
 ```bash
-bun install
+pnpm install
 ```
 
-To run:
+### Running the dev server
 
 ```bash
-bun run index.ts
+pnpm dev
 ```
 
-This project was created using `bun init` in bun v1.1.34. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
-# dyna
+### Building the app
+
+```bash
+pnpm build
+```
+
+## License
+
+MIT
