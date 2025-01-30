@@ -106,7 +106,9 @@ type ColumnTypes =
     | 'MySqlDateTime'
     | 'PgSerial'
     | 'PgVarchar'
-    | 'PgTimestamp';
+    | 'PgTimestamp'
+    | 'PgTimestampString'
+    ;
 
 const typeMap: Record<ColumnTypes, GraphQLScalarType> = {
     PgInteger: GraphQLInt,
@@ -116,6 +118,7 @@ const typeMap: Record<ColumnTypes, GraphQLScalarType> = {
     PgVarchar: GraphQLString,
     MySqlVarChar: GraphQLString,
     PgTimestamp: dateScalar,
+    PgTimestampString: dateScalar,
     MySqlDateTime: dateScalar,
 };
 

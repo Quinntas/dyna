@@ -7,7 +7,7 @@ import {
 } from "../../../../graphql/objects/pagination.ts";
 import type {UserSelectModel} from "../../infra/user.table.ts";
 import {graphqlSchemaData} from "../../../../graphql/schemaData.ts";
-import {GraphQLList} from "graphql";
+import {GraphQLList, GraphQLNonNull} from "graphql";
 
 
 export interface UsersInputDTO {
@@ -31,7 +31,7 @@ export const usersInput = {
 
 export const usersOutput = {
     data: {
-        type: new GraphQLList(graphqlSchemaData.types.users)
+        type: new GraphQLNonNull(new GraphQLList(graphqlSchemaData.types.users))
     },
     pagination: {
         type: paginationOutputObject

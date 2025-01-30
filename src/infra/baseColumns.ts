@@ -7,7 +7,7 @@ export const baseColumns = {
     pid: varchar('pid', {length: 191})
         .notNull()
         .$defaultFn(() => randomUUID()),
-    createdAt: timestamp('created_at', {mode:"date"})
+    createdAt: timestamp('created_at', {mode:"string"})
         .notNull()
         .defaultNow(),
 };
