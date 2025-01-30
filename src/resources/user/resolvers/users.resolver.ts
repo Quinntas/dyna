@@ -2,7 +2,7 @@ import {usersInput, type UsersInputDTO, usersOutput, type UsersOutputDTO} from '
 import type {GraphQLResolveInfo} from "graphql";
 import {Resolver} from "../../../core/resolver.ts";
 import type {Context} from "../../../core/context.ts";
-import {buildQuery, nestObject} from "../../../core/dyna.ts";
+import {buildQuery, parseGraphQLResolveInfo} from "../../../core/dyna.ts";
 import {type UserSelectModel, userTable} from "../infra/user.table.ts";
 
 export class UsersResolver extends Resolver<Context, UsersInputDTO, UsersOutputDTO> {
@@ -18,17 +18,14 @@ export class UsersResolver extends Resolver<Context, UsersInputDTO, UsersOutputD
     ): Promise<UsersOutputDTO> {
         const query = buildQuery(
             userTable,
-            resolveInfo,
-            input.where,
-            resolveInfo.variableValues,
-            input.pagination?.limit,
-            input.pagination?.offset
+            parseGraphQLResolveInfo('users', 10, resolveInfo, 'admin'),
+            input.pagination
         );
 
-        const results: UserSelectModel[] = await query.execute();
+        const results = await query.execute();
 
         return {
-            data: results.map(row => nestObject(row)) as unknown as UserSelectModel,
+            data: results as unknown as UserSelectModel,
             pagination: {
                 nextOffset: 0,
                 total: 0,

@@ -1,6 +1,8 @@
 import {
     and,
+    asc,
     Column,
+    desc,
     eq,
     getTableColumns,
     getTableName,
@@ -16,7 +18,7 @@ import {
     notIlike,
     notInArray,
     notLike,
-    sql,
+    type SelectedFields,
     SQL,
     Table
 } from "drizzle-orm";
@@ -35,10 +37,31 @@ import {GraphQLInputObjectType, type GraphQLResolveInfo, type GraphQLScalarType}
 import type {GraphQLInputFieldConfig} from "graphql/type/definition";
 import {dateScalar} from "../graphql/scalars/date.ts";
 import {db} from "../infra/database.ts";
+import {tables} from "../graphql/tables.ts";
+import {rolePermissions, type Roles} from "../infra/rbac.ts";
+import {GraphQLError, type SelectionNode} from "graphql/index";
+import {Kind} from "graphql/language";
+import {type PaginationInputDTO, PaginationOrderByEnum} from "../graphql/objects/pagination.ts";
 
 type DrizzleSchemaType = Record<string, Table>;
 type ObjectTypeBuffer = Record<string, GraphQLObjectType>;
 type FilterTypeBuffer = Record<string, GraphQLInputObjectType>;
+
+export type QueryAnalysisResult = {
+    obj: ParsedGraphQLResolveInfo;
+    depth: number;
+    resources: {
+        tables: Set<Table>;
+        columns: Map<string, Set<string>>;
+        joinTables: Set<string>;
+        whereConditions: Map<string, WhereFilterObject>;
+    };
+};
+
+export type ParsedGraphQLResolveInfo = {
+    [key: string]: Column | ParsedGraphQLResolveInfo;
+};
+
 
 interface ForeignKeyInfo {
     column: Column;
@@ -50,13 +73,6 @@ interface SelectField {
     table: string;
     column: string;
     alias?: string;
-}
-
-interface JoinInfo {
-    sourceTable: Table;
-    targetTable: Table;
-    sourceColumn: Column;
-    targetColumn: Column;
 }
 
 type WhereFilters =
@@ -364,137 +380,66 @@ const getNestedSelections = (fieldNode: FieldNode): Set<string> => {
 };
 
 export const buildQuery = (
-    table: Table, info: GraphQLResolveInfo, whereFilters?: WhereFilterObject, args?: Record<string, any>,
-    limit?: number, offset?: number
+    table: Table,
+    analysis: QueryAnalysisResult | null,
+    pagination?: PaginationInputDTO
 ) => {
-    const selections = getSelectedFields(info);
-    const joins: JoinInfo[] = [];
-    const selectFields: SelectField[] = [];
-    const existingAliases = new Set<string>();
-    const whereConditions: SQL[] = [];
-    const foreignKeyCache = new Map<string, ReturnType<typeof getForeignKeyForField>>();
+    if (!analysis)
+        throw new Error("Analysis is null")
 
-    const addField = ({table: tableName, column, alias}: SelectField) => {
-        const fieldAlias = alias || column;
-        if (!existingAliases.has(fieldAlias)) {
-            existingAliases.add(fieldAlias);
-            selectFields.push({table: tableName, column, alias: fieldAlias});
-        }
-    };
+    const query = db.select(
+        analysis.obj as SelectedFields<any, any>
+    ).from(table)
 
-    const memoizedGetForeignKeyForField = (currentTable: Table, fieldName: string) => {
-        const tableName = getTableName(currentTable);
-        const key = `${tableName}:${fieldName}`;
-        if (foreignKeyCache.has(key)) return foreignKeyCache.get(key)!;
+    for (const joinTableName of analysis.resources.joinTables) {
+        const joinTable: Table | undefined = tables[joinTableName];
 
-        const result = getForeignKeyForField(currentTable, fieldName);
-        foreignKeyCache.set(key, result);
-        return result;
-    };
-
-    const processRootSelection = (selection: FieldNode) => {
-        if (selection.name.value === "data" && selection.selectionSet) {
-            const selections = selection.selectionSet.selections;
-            for (let i = 0; i < selections.length; i++) {
-                const subSelection = selections[i];
-                if (subSelection.kind === "Field") {
-                    processNestedSelections(table, subSelection);
-                }
-            }
-        } else {
-            processNestedSelections(table, selection);
-        }
-    };
-
-    const processNestedSelections = (currentTable: Table, fieldNode: FieldNode, parentPrefix = "") => {
-        const fieldName = fieldNode.name.value;
-        const foreignKey = memoizedGetForeignKeyForField(currentTable, fieldName);
-        if (!foreignKey) return;
-
-        const nestedSelections = getNestedSelections(fieldNode);
-        const prefix = parentPrefix ? `${parentPrefix}_${fieldName}` : fieldName;
-        const currentTableName = getTableName(currentTable);
-
-        const nestedWhereArg = fieldNode.arguments?.find(arg => arg.name.value === "where");
-        const nestedWhereValue = nestedWhereArg?.value.kind === "Variable"
-            ? args?.[nestedWhereArg.value.name.value]
-            : undefined;
-
-        if (nestedWhereValue) {
-            const nestedConditions = parseWhereFilters(foreignKey.table, nestedWhereValue);
-            if (nestedConditions) whereConditions.push(nestedConditions);
+        if (!joinTable) {
+            throw new Error(`Table ${joinTableName} not found`);
         }
 
-        joins.push({
-            sourceTable: currentTable,
-            targetTable: foreignKey.table,
-            sourceColumn: foreignKey.sourceColumn,
-            targetColumn: foreignKey.targetColumn,
-        });
-
-        const fkColumnName = foreignKey.sourceColumn.name;
-        addField({
-            table: currentTableName,
-            column: fkColumnName,
-            alias: parentPrefix ? `${parentPrefix}_${fkColumnName}` : fkColumnName
-        });
-
-        const nestedFields = buildSelectFields(foreignKey.table, nestedSelections, prefix);
-        for (let i = 0; i < nestedFields.length; i++) {
-            addField(nestedFields[i]);
-        }
-
-        const selectionSet = fieldNode.selectionSet?.selections;
-        if (selectionSet) {
-            for (let i = 0; i < selectionSet.length; i++) {
-                const selection = selectionSet[i];
-                if (selection.kind === "Field") {
-                    processNestedSelections(foreignKey.table, selection, prefix);
-                }
-            }
-        }
-    };
-
-    const initialFields = buildSelectFields(table, selections);
-    for (let i = 0; i < initialFields.length; i++) {
-        addField(initialFields[i]);
+        const mainTableConfig = getTableConfig(table);
+        query.leftJoin(
+            joinTable,
+            eq(
+                mainTableConfig.foreignKeys[0].reference().columns[0],
+                mainTableConfig.foreignKeys[0].reference().foreignColumns[0]
+            )
+        )
     }
 
-    const rootSelectionSet = info.fieldNodes[0].selectionSet?.selections;
-    if (rootSelectionSet) {
-        for (let i = 0; i < rootSelectionSet.length; i++) {
-            const selection = rootSelectionSet[i];
-            if (selection.kind === "Field") {
-                processRootSelection(selection);
-            }
+    const parsedConditions = []
+
+    for (const [tableName, conditions] of analysis.resources.whereConditions) {
+        const table: Table | undefined = tables[tableName];
+
+        if (!table) {
+            throw new Error(`Table ${tableName} not found`);
         }
+
+        parsedConditions.push(parseWhereFilters(table, conditions))
     }
 
-    const selectObj: Record<string, SQL> = {};
-    for (let i = 0; i < selectFields.length; i++) {
-        const {table: tableName, column, alias} = selectFields[i];
-        selectObj[alias || column] = sql`${sql.identifier(tableName)}
-        .
-        ${sql.identifier(column)}`;
-    }
+    if (parsedConditions.length > 0)
+        query.where(and(...parsedConditions))
 
-    let query: any = db.select(selectObj).from(table);
+    if (pagination?.limit)
+        query.limit(pagination.limit)
 
-    for (let i = 0; i < joins.length; i++) {
-        const {targetTable, sourceColumn, targetColumn} = joins[i];
-        query = query.leftJoin(targetTable, eq(sourceColumn, targetColumn));
-    }
+    if (pagination?.offset)
+        query.offset(pagination.offset)
 
-    if (whereFilters) {
-        const mainConditions = parseWhereFilters(table, whereFilters);
-        if (mainConditions) whereConditions.push(mainConditions);
-    }
-    if (whereConditions.length) query = query.where(and(...whereConditions));
+    if (pagination?.orderBy)
+        switch (pagination.orderBy) {
+            case PaginationOrderByEnum.ASC:
+                query.orderBy(asc(table['id']))
+                break;
+            case PaginationOrderByEnum.DESC:
+                query.orderBy(desc(table['id']))
+                break;
+        }
 
-    if (limit) query = query.limit(limit);
-    if (offset) query = query.offset(offset);
-
-    return query;
+    return query
 };
 
 // Optimized helper function
@@ -622,4 +567,180 @@ export function generateSchemaData<T extends DrizzleSchemaType>(schema: T) {
         types,
         filters
     }
+}
+
+export function parseGraphQLResolveInfo(
+    baseObjectName: keyof typeof tables,
+    maxDepth: number,
+    info: GraphQLResolveInfo,
+    userRole: Roles,
+): QueryAnalysisResult | null {
+    const fieldNodes = info.fieldNodes;
+    if (!fieldNodes[0]?.selectionSet?.selections) return null;
+
+    const stack: Array<{
+        objectName: string;
+        selections: readonly SelectionNode[];
+        currentDepth: number;
+        parentObj: ParsedGraphQLResolveInfo;
+        whereArg?: WhereFilterObject;
+    }> = [];
+
+    const result: QueryAnalysisResult = {
+        obj: {},
+        depth: 0,
+        resources: {
+            tables: new Set<Table>(),
+            columns: new Map<string, Set<string>>(),
+            joinTables: new Set<string>(),
+            whereConditions: new Map<string, WhereFilterObject>(),
+        },
+    };
+
+    const baseWhereArg = getWhereArgument(fieldNodes[0], info.variableValues);
+
+    for (const selection of fieldNodes[0].selectionSet.selections) {
+        if (selection.kind === Kind.FIELD && selection.name.value === 'data' && selection.selectionSet) {
+            stack.push({
+                objectName: baseObjectName,
+                selections: selection.selectionSet.selections,
+                currentDepth: 1,
+                parentObj: result.obj,
+                whereArg: baseWhereArg
+            });
+            result.resources.tables.add(baseObjectName);
+            if (baseWhereArg) {
+                result.resources.whereConditions.set(baseObjectName, baseWhereArg);
+            }
+            break;
+        }
+    }
+
+    while (stack.length > 0) {
+        const {objectName, selections, currentDepth, parentObj, whereArg} = stack.pop()!;
+        const table: Table | undefined = tables[objectName];
+
+        if (!table) {
+            throw new GraphQLError(`Table ${objectName} not found`);
+        }
+
+        if (currentDepth > result.depth) {
+            result.depth = currentDepth;
+        }
+
+        if (currentDepth > maxDepth) {
+            throw new GraphQLError(`Max depth of ${maxDepth} exceeded`);
+        }
+
+        for (const selection of selections) {
+            if (selection.kind !== Kind.FIELD) continue;
+
+            const fieldName = selection.name.value;
+            const column = table[fieldName as keyof typeof table];
+
+            if (selection.selectionSet) {
+                const nestedObj: ParsedGraphQLResolveInfo = {};
+                parentObj[fieldName] = nestedObj;
+
+                const nestedWhereArg = getWhereArgument(selection, info.variableValues);
+
+                const joinedTable: Table | undefined = tables[fieldName];
+                if (joinedTable) {
+                    result.resources.tables.add(fieldName);
+                    result.resources.joinTables.add(fieldName);
+                    if (nestedWhereArg) {
+                        result.resources.whereConditions.set(fieldName, nestedWhereArg);
+                    }
+                }
+
+                stack.push({
+                    objectName: fieldName,
+                    selections: selection.selectionSet.selections,
+                    currentDepth: currentDepth + 1,
+                    parentObj: nestedObj,
+                    whereArg: nestedWhereArg
+                });
+            } else if (column) {
+                if (!result.resources.columns.has(objectName)) {
+                    result.resources.columns.set(objectName, new Set<string>());
+                }
+                result.resources.columns.get(objectName)!.add(fieldName);
+
+                parentObj[fieldName] = column as Column;
+            }
+        }
+    }
+
+    const authError = authorizeQuery(result.resources, userRole);
+
+    if (authError)
+        throw authError;
+
+    return result.depth > 0 ? result : null;
+}
+
+function getWhereArgument(
+    field: SelectionNode & { arguments?: readonly any[] },
+    variables: Record<string, any>
+): WhereFilterObject | undefined {
+    if (!field.arguments?.length) return undefined;
+
+    const whereArg = field.arguments.find(arg => arg.name.value === 'where');
+    if (!whereArg) return undefined;
+
+    if (whereArg.value.kind === Kind.VARIABLE) {
+        const varName = whereArg.value.name.value;
+        return variables[varName];
+    }
+
+    if (whereArg.value.kind === Kind.OBJECT) {
+        return parseWhereObject(whereArg.value);
+    }
+
+    return undefined;
+}
+
+function parseWhereObject(obj: any): WhereFilterObject {
+    const result: WhereFilterObject = {};
+
+    for (const field of obj.fields) {
+        const key = field.name.value;
+        const value = field.value;
+
+        if (value.kind === Kind.OBJECT) {
+            result[key] = parseWhereObject(value);
+        } else {
+            result[key] = value.value;
+        }
+    }
+
+    return result;
+}
+
+function authorizeQuery(resources: QueryAnalysisResult['resources'], role: Roles): GraphQLError | null {
+    const permissions = rolePermissions[role]
+
+    for (const table of resources.tables) {
+        if (!permissions.allowedTables.has('*') && !permissions.allowedTables.has(table)) {
+            return new GraphQLError(`Unauthorized access to table: ${table}`);
+        }
+    }
+
+    for (const [table, columns] of resources.columns) {
+        const allowedColumns = permissions.allowedColumns.get(table) || permissions.allowedColumns.get('*');
+
+        if (!allowedColumns) {
+            return new GraphQLError(`Unauthorized access to table: ${table}`);
+        }
+
+        if (!allowedColumns.has('*')) {
+            for (const column of columns) {
+                if (!allowedColumns.has(column)) {
+                    return new GraphQLError(`Unauthorized access to column: ${table}.${column}`);
+                }
+            }
+        }
+    }
+
+    return null;
 }
