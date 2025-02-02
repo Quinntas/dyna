@@ -2,6 +2,7 @@ import {
     and,
     asc,
     Column,
+    count,
     desc,
     eq,
     getTableColumns,
@@ -23,29 +24,32 @@ import {
     Table
 } from "drizzle-orm";
 import {
-    type FieldNode,
     GraphQLBoolean,
+    GraphQLError,
     type GraphQLFieldConfig,
+    type GraphQLInputFieldConfig,
+    GraphQLInputObjectType,
     GraphQLInt,
     GraphQLList,
     GraphQLNonNull,
     GraphQLObjectType,
-    GraphQLString,
+    type GraphQLResolveInfo,
+    GraphQLScalarType,
+    GraphQLString
 } from "graphql";
 import {getTableConfig} from "drizzle-orm/pg-core";
-import {GraphQLInputObjectType, type GraphQLResolveInfo, type GraphQLScalarType} from "graphql/type";
-import type {GraphQLInputFieldConfig} from "graphql/type/definition";
+import {Kind} from "graphql/language";
 import {dateScalar} from "../graphql/scalars/date.ts";
 import {db} from "../infra/database.ts";
 import {tables} from "../graphql/tables.ts";
 import {rolePermissions, type Roles} from "../infra/rbac.ts";
-import {GraphQLError, type SelectionNode} from "graphql/index";
-import {Kind} from "graphql/language";
 import {type PaginationInputDTO, PaginationOrderByEnum} from "../graphql/objects/pagination.ts";
 
+// ──────────────────────────────────────────────
+// SECTION: Type Definitions & Constants
+// ──────────────────────────────────────────────
+
 type DrizzleSchemaType = Record<string, Table>;
-type ObjectTypeBuffer = Record<string, GraphQLObjectType>;
-type FilterTypeBuffer = Record<string, GraphQLInputObjectType>;
 
 export type QueryAnalysisResult = {
     obj: ParsedGraphQLResolveInfo;
@@ -62,41 +66,17 @@ export type ParsedGraphQLResolveInfo = {
     [key: string]: Column | ParsedGraphQLResolveInfo;
 };
 
-
 interface ForeignKeyInfo {
     column: Column;
     table: Table;
     fieldName: string;
 }
 
-interface SelectField {
-    table: string;
-    column: string;
-    alias?: string;
-}
-
+export type WhereFilterObject = Record<string, Partial<Record<WhereFilters, unknown>>>;
 type WhereFilters =
     | "eq" | "gt" | "gte" | "lt" | "lte"
     | "inArray" | "notInArray" | "isNull" | "isNotNull"
     | "like" | "notLike" | "ilike" | "notIlike";
-
-export type WhereFilterObject = Record<string, Partial<Record<WhereFilters, unknown>>>;
-
-const objectTypeBuffer: ObjectTypeBuffer = {};
-const filterTypeBuffer: FilterTypeBuffer = {};
-const columnFilterTypeBuffer: Record<string, GraphQLInputObjectType> = {};
-
-const likeFilters: Record<string, { type: typeof GraphQLString }> = {
-    like: {type: GraphQLString},
-    notLike: {type: GraphQLString},
-    ilike: {type: GraphQLString},
-    notIlike: {type: GraphQLString},
-};
-
-const nullFilters: Record<string, { type: typeof GraphQLBoolean }> = {
-    isNull: {type: GraphQLBoolean},
-    isNotNull: {type: GraphQLBoolean},
-};
 
 type ColumnTypes =
     | 'PgText'
@@ -107,8 +87,7 @@ type ColumnTypes =
     | 'PgSerial'
     | 'PgVarchar'
     | 'PgTimestamp'
-    | 'PgTimestampString'
-    ;
+    | 'PgTimestampString';
 
 const typeMap: Record<ColumnTypes, GraphQLScalarType> = {
     PgInteger: GraphQLInt,
@@ -124,10 +103,26 @@ const typeMap: Record<ColumnTypes, GraphQLScalarType> = {
 
 const getGraphQLTypeFromDrizzleColType = (colType: string): GraphQLScalarType => {
     const gqlType = typeMap[colType as ColumnTypes];
-    if (!gqlType) {
-        throw new Error(`Unknown column type ${colType}`);
-    }
+    if (!gqlType) throw new Error(`Unknown column type ${colType}`);
     return gqlType;
+};
+
+const capitalize = (s: string): string => s[0].toUpperCase() + s.slice(1);
+
+// ──────────────────────────────────────────────
+// SECTION: GraphQL Filter Helpers
+// ──────────────────────────────────────────────
+
+const likeFilters: Record<string, { type: typeof GraphQLString }> = {
+    like: {type: GraphQLString},
+    notLike: {type: GraphQLString},
+    ilike: {type: GraphQLString},
+    notIlike: {type: GraphQLString},
+};
+
+const nullFilters: Record<string, { type: typeof GraphQLBoolean }> = {
+    isNull: {type: GraphQLBoolean},
+    isNotNull: {type: GraphQLBoolean},
 };
 
 const newFieldFilters = (gqlType: GraphQLScalarType): Record<string, GraphQLInputFieldConfig> => ({
@@ -142,454 +137,280 @@ const newFieldFilters = (gqlType: GraphQLScalarType): Record<string, GraphQLInpu
     ...nullFilters,
 });
 
-const capitalize = (str: string): string => str[0].toUpperCase() + str.slice(1);
+const columnFilterTypeBuffer: Record<string, GraphQLInputObjectType> = Object.create(null);
 
-const newGraphQlFilterObject = (objectName: string, colProps: Column, prefix = ''): GraphQLInputObjectType => {
-    const filterName = `${prefix}${objectName}${capitalize(colProps.name)}Filters`;
+const newGraphQlFilterObject = (
+    objectName: string,
+    col: Column,
+    prefix = ''
+): GraphQLInputObjectType => {
+    const filterName = `${prefix}${objectName}${capitalize(col.name)}Filters`;
     if (columnFilterTypeBuffer[filterName]) return columnFilterTypeBuffer[filterName];
-
-    return columnFilterTypeBuffer[filterName] = new GraphQLInputObjectType({
+    return (columnFilterTypeBuffer[filterName] = new GraphQLInputObjectType({
         name: filterName,
-        fields: newFieldFilters(getGraphQLTypeFromDrizzleColType(colProps.columnType)),
-    });
+        fields: newFieldFilters(getGraphQLTypeFromDrizzleColType(col.columnType)),
+    }));
 };
 
-const genInputFiltersFromTable = (objectName: string, table: Table, prefix = '', extraFields: Record<string, GraphQLInputFieldConfig> = {}): GraphQLInputObjectType => {
+const filterTypeBuffer: Record<string, GraphQLInputObjectType> = Object.create(null);
+
+export const genInputFiltersFromTable = (
+    objectName: string,
+    table: Table,
+    prefix = '',
+    extraFields: Record<string, GraphQLInputFieldConfig> = {}
+): GraphQLInputObjectType => {
     const filterName = `${prefix}${objectName}Filters`;
     if (filterTypeBuffer[filterName]) return filterTypeBuffer[filterName];
 
-    const filters: Record<string, GraphQLInputFieldConfig> = {};
-    const columns = getTableColumns(table);
-
-    for (const columnName in columns) {
-        filters[columnName] = {type: newGraphQlFilterObject(objectName, columns[columnName], '')};
+    const cols = getTableColumns(table);
+    const filters: Record<string, GraphQLInputFieldConfig> = Object.create(null);
+    for (const colName in cols) {
+        filters[colName] = {type: newGraphQlFilterObject(objectName, cols[colName])};
     }
 
-    return filterTypeBuffer[filterName] = new GraphQLInputObjectType({
+    return (filterTypeBuffer[filterName] = new GraphQLInputObjectType({
         name: filterName,
-        description: `Filters for ${objectName} object`,
-        fields: {...filters, ...extraFields},
-    });
+        description: `Filters for ${objectName}`,
+        fields: {...filters, ...extraFields}
+    }));
 };
 
+// ──────────────────────────────────────────────
+// SECTION: Schema Object Types
+// ──────────────────────────────────────────────
+
+type ObjectTypeBuffer = Record<string, GraphQLObjectType>;
+const objectTypeBuffer: ObjectTypeBuffer = Object.create(null);
 
 const sortTablesByDependencies = (schema: DrizzleSchemaType): [string, Table][] => {
     const sorted: [string, Table][] = [];
     const visited = new Set<string>();
 
-    const visit = (name: string, table: Table): void => {
-        if (visited.has(name)) return;
-        visited.add(name);
-
-        const config = getTableConfig(table);
-        for (let i = 0; i < config.foreignKeys.length; i++) {
-            const relatedTable = config.foreignKeys[i].reference().foreignTable;
-            visit(getTableName(relatedTable), relatedTable);
-        }
-        sorted.push([name, table]);
-    };
-
-    for (const name in schema) {
-        visit(name, schema[name]);
+    for (const [name, table] of Object.entries(schema)) {
+        (function visit(n: string, t: Table): void {
+            if (visited.has(n)) return;
+            visited.add(n);
+            const config = getTableConfig(t);
+            const fks = config.foreignKeys;
+            for (let i = 0, len = fks.length; i < len; i++) {
+                const relatedTable = fks[i].reference().foreignTable;
+                visit(getTableName(relatedTable), relatedTable);
+            }
+            sorted.push([n, t]);
+        })(name, table);
     }
     return sorted;
 };
 
-const parseWhereFilters = (table: Table, filters?: WhereFilterObject): SQL | undefined => {
-    if (!filters) return undefined;
-
-    const conditions: SQL[] = [];
-    for (const columnName in filters) {
-        const filterObj = filters[columnName];
-        if (!filterObj) continue;
-
-        const column: any = table[columnName as keyof typeof table];
-        if (!column) continue;
-
-        for (const operator in filterObj) {
-            let condition: SQL | undefined;
-            const value = filterObj[operator as WhereFilters];
-
-            switch (operator as WhereFilters) {
-                case "eq":
-                    condition = eq(column, value);
-                    break;
-                case "gt":
-                    condition = gt(column, value);
-                    break;
-                case "gte":
-                    condition = gte(column, value);
-                    break;
-                case "lt":
-                    condition = lt(column, value);
-                    break;
-                case "lte":
-                    condition = lte(column, value);
-                    break;
-                case "inArray":
-                    condition = inArray(column, value as unknown[]);
-                    break;
-                case "notInArray":
-                    condition = notInArray(column, value as unknown[]);
-                    break;
-                case "like":
-                    condition = like(column, value as string);
-                    break;
-                case "notLike":
-                    condition = notLike(column, value as string);
-                    break;
-                case "ilike":
-                    condition = ilike(column, value as string);
-                    break;
-                case "notIlike":
-                    condition = notIlike(column, value as string);
-                    break;
-                case "isNull":
-                    if (value) condition = isNull(column);
-                    break;
-                case "isNotNull":
-                    if (value) condition = isNotNull(column);
-                    break;
-            }
-            if (condition) conditions.push(condition);
-        }
-    }
-
-    return conditions.length ? and(...conditions) : undefined;
-};
-
-
-const createObjectTypes = (schema: DrizzleSchemaType): ObjectTypeBuffer => {
-    const sortedTables = sortTablesByDependencies(schema);
-
-    for (const [name, table] of sortedTables) {
-        const baseFilterName = `${name}Filters`;
-        if (!filterTypeBuffer[baseFilterName]) {
-            filterTypeBuffer[baseFilterName] = genInputFiltersFromTable(name, table);
-        }
-    }
-
-    for (const [name, table] of sortedTables) {
-        if (!objectTypeBuffer[name]) {
-            objectTypeBuffer[name] = new GraphQLObjectType({
-                name: `${name}Object`,
-                fields: () => generateFields(name, table),
-            });
-        }
-    }
-
-    return objectTypeBuffer;
-};
-const generateFields = (name: string, table: Table): Record<string, GraphQLFieldConfig<unknown, unknown>> => {
+const generateFields = (name: string, table: Table): Record<string, GraphQLFieldConfig<any, any>> => {
     const config = getTableConfig(table);
     const fkMap = new Map<string, ForeignKeyInfo>();
 
-    config.foreignKeys.forEach(fk => {
-        const column = fk.reference().columns[0];
-        fkMap.set(column.name, {
-            column,
+    const fks = config.foreignKeys;
+    for (let i = 0, len = fks.length; i < len; i++) {
+        const fk = fks[i];
+        const col = fk.reference().columns[0];
+        fkMap.set(col.name, {
+            column: col,
             table: fk.reference().foreignTable,
-            fieldName: getTableName(fk.reference().foreignTable),
+            fieldName: getTableName(fk.reference().foreignTable)
         });
-    });
+    }
 
-    const fields: Record<string, GraphQLFieldConfig<unknown, unknown>> = {};
-
-    Object.entries(config.columns).forEach(([columnName, column]) => {
-        const fk = fkMap.get(column.name);
+    const fields: Record<string, GraphQLFieldConfig<any, any>> = Object.create(null);
+    const cols = config.columns;
+    for (const colName in cols) {
+        const col = cols[colName];
+        const fk = fkMap.get(col.name);
         if (fk) {
             const relatedTableName = getTableName(fk.table);
-            const relatedObjectType = objectTypeBuffer[relatedTableName];
-            if (!relatedObjectType) {
-                throw new Error(`Type for ${relatedTableName} not found in buffer.`);
-            }
-
+            const relatedObj = objectTypeBuffer[relatedTableName];
+            if (!relatedObj) throw new Error(`Type for ${relatedTableName} not found.`);
             fields[fk.fieldName] = {
-                type: new GraphQLNonNull(relatedObjectType),
-                args: {
-                    where: {
-                        type: getFilterType(relatedTableName, fk.table, "Nested")
-                    },
-                },
-                resolve: (source: any) => source[fk.fieldName],
+                type: new GraphQLNonNull(relatedObj),
+                args: {where: {type: getFilterType(relatedTableName, fk.table, "Nested")}},
+                resolve: (src: any) => src[fk.fieldName]
             };
         } else {
-            fields[column.name] = {
-                type: getGraphQLTypeFromDrizzleColType(column.columnType),
-            };
+            fields[col.name] = {type: getGraphQLTypeFromDrizzleColType(col.columnType)};
         }
-    });
-
+    }
     return fields;
 };
 
-
-const getSelectedFields = (info: GraphQLResolveInfo): Set<string> => {
-    const selections = new Set<string>();
-    const fieldNodes = info.fieldNodes;
-
-    for (let i = 0; i < fieldNodes.length; i++) {
-        const selectionSet = fieldNodes[i]?.selectionSet?.selections;
-        if (!selectionSet) continue;
-        for (let j = 0; j < selectionSet.length; j++) {
-            const selection = selectionSet[j];
-            if (selection.kind === "Field" && selection.name.value) {
-                selections.add(selection.name.value);
-            }
+export const createObjectTypes = (schema: DrizzleSchemaType): ObjectTypeBuffer => {
+    const sorted = sortTablesByDependencies(schema);
+    for (let i = 0, len = sorted.length; i < len; i++) {
+        const [name, table] = sorted[i];
+        const baseFilter = `${name}Filters`;
+        if (!filterTypeBuffer[baseFilter]) {
+            filterTypeBuffer[baseFilter] = genInputFiltersFromTable(name, table);
         }
     }
-
-    return selections;
-};
-
-const getForeignKeyForField = (table: Table, fieldName: string): {
-    table: Table,
-    sourceColumn: Column,
-    targetColumn: Column
-} | null => {
-    const config = getTableConfig(table);
-
-    for (let i = 0; i < config.foreignKeys.length; i++) {
-        const fk = config.foreignKeys[i];
-        const targetTable = fk.reference().foreignTable;
-        const targetTableName = getTableName(targetTable).toLowerCase();
-
-        if (fieldName.toLowerCase() === targetTableName.toLowerCase() ||
-            fieldName.toLowerCase() === `${targetTableName}_id`) {
-            return {
-                table: targetTable,
-                sourceColumn: fk.reference().columns[0],
-                targetColumn: fk.reference().foreignColumns[0]
-            };
+    for (let i = 0, len = sorted.length; i < len; i++) {
+        const [name, table] = sorted[i];
+        if (!objectTypeBuffer[name]) {
+            objectTypeBuffer[name] = new GraphQLObjectType({
+                name: `${name}Object`,
+                fields: () => generateFields(name, table)
+            });
         }
     }
-    return null;
+    return objectTypeBuffer;
 };
 
-const getNestedSelections = (fieldNode: FieldNode): Set<string> => {
-    const selections = new Set<string>();
-    const fieldNodeSelections = fieldNode.selectionSet?.selections;
-
-    if (fieldNodeSelections) {
-        for (let i = 0; i < fieldNodeSelections.length; i++) {
-            const selection = fieldNodeSelections[i];
-            if (selection.kind === "Field") {
-                selections.add(selection.name.value);
-            }
-        }
+const getFilterType = (name: string, table: Table, prefix = ""): GraphQLInputObjectType => {
+    const base = `${name}Filters`;
+    const prefixed = `${prefix}${name}Filters`;
+    if (filterTypeBuffer[base]) return filterTypeBuffer[base];
+    if (!filterTypeBuffer[prefixed]) {
+        filterTypeBuffer[prefixed] = genInputFiltersFromTable(name, table, prefix);
     }
-
-    return selections;
+    return filterTypeBuffer[prefixed];
 };
+
+// ──────────────────────────────────────────────
+// SECTION: Query Building
+// ──────────────────────────────────────────────
 
 export const buildQuery = (
     table: Table,
     analysis: QueryAnalysisResult | null,
-    pagination?: PaginationInputDTO
+    pagination?: PaginationInputDTO,
+    extraConditions?: SQL
 ) => {
-    if (!analysis)
-        throw new Error("Analysis is null")
+    if (!analysis) throw new Error("Analysis is null");
+    const query = db.select(analysis.obj as SelectedFields<any, any>).from(table);
+    const totalQuery = db.select({count: count()}).from(table);
 
-    const query = db.select(
-        analysis.obj as SelectedFields<any, any>
-    ).from(table)
-
-    for (const joinTableName of analysis.resources.joinTables) {
-        const joinTable: Table | undefined = tables[joinTableName];
-
-        if (!joinTable) {
-            throw new Error(`Table ${joinTableName} not found`);
-        }
-
-        const mainTableConfig = getTableConfig(table);
+    const joinArr = Array.from(analysis.resources.joinTables);
+    for (let i = 0, len = joinArr.length; i < len; i++) {
+        const jtName = joinArr[i];
+        const jt = tables[jtName];
+        if (!jt) throw new Error(`Table ${jtName} not found`);
+        const mainCfg = getTableConfig(table);
+        // TODO: Use first FK for join
         query.leftJoin(
-            joinTable,
+            jt,
             eq(
-                mainTableConfig.foreignKeys[0].reference().columns[0],
-                mainTableConfig.foreignKeys[0].reference().foreignColumns[0]
+                mainCfg.foreignKeys[0].reference().columns[0],
+                mainCfg.foreignKeys[0].reference().foreignColumns[0]
             )
-        )
+        );
+        totalQuery.leftJoin(
+            jt,
+            eq(
+                mainCfg.foreignKeys[0].reference().columns[0],
+                mainCfg.foreignKeys[0].reference().foreignColumns[0]
+            )
+        );
     }
 
-    const parsedConditions = []
+    const wcEntries = Array.from(analysis.resources.whereConditions.entries());
+    const conds: SQL[] = [];
+    for (let i = 0, len = wcEntries.length; i < len; i++) {
+        const [tName, condObj] = wcEntries[i];
+        const t = tables[tName];
+        if (!t) throw new Error(`Table ${tName} not found`);
+        const parsed = parseWhereFilters(t, condObj);
+        if (parsed) conds.push(parsed);
+    }
+    if (conds.length) {
+        if (extraConditions) query.where(and(extraConditions, ...conds));
+        else query.where(and(...conds));
+        if (extraConditions) totalQuery.where(and(extraConditions, ...conds));
+        else totalQuery.where(and(...conds));
+    }
 
-    for (const [tableName, conditions] of analysis.resources.whereConditions) {
-        const table: Table | undefined = tables[tableName];
-
-        if (!table) {
-            throw new Error(`Table ${tableName} not found`);
+    if (pagination) {
+        if (pagination.limit) query.limit(pagination.limit);
+        if (pagination.offset) query.offset(pagination.offset);
+        if (pagination.orderBy) {
+            query.orderBy(pagination.orderBy === PaginationOrderByEnum.ASC
+                ? asc(table["id"])
+                : desc(table["id"]));
         }
-
-        parsedConditions.push(parseWhereFilters(table, conditions))
-    }
-
-    if (parsedConditions.length > 0)
-        query.where(and(...parsedConditions))
-
-    if (pagination?.limit)
-        query.limit(pagination.limit)
-
-    if (pagination?.offset)
-        query.offset(pagination.offset)
-
-    if (pagination?.orderBy)
-        switch (pagination.orderBy) {
-            case PaginationOrderByEnum.ASC:
-                query.orderBy(asc(table['id']))
-                break;
-            case PaginationOrderByEnum.DESC:
-                query.orderBy(desc(table['id']))
-                break;
-        }
-
-    return query
-};
-
-// Optimized helper function
-const buildSelectFields = (table: Table, selections: Set<string>, prefix = ""): SelectField[] => {
-    const fields: SelectField[] = [];
-    const tableName = getTableName(table);
-    const idAlias = prefix ? `${prefix}_id` : "id";
-
-    fields.push({table: tableName, column: "id", alias: idAlias});
-
-    const selectionArray = Array.from(selections);
-    for (let i = 0; i < selectionArray.length; i++) {
-        const field = selectionArray[i];
-        if (table[field as keyof typeof table]) {
-            fields.push({
-                table: tableName,
-                column: field,
-                alias: prefix ? `${prefix}_${field}` : field,
-            });
-        }
-    }
-
-    return fields;
-};
-
-const getFilterType = (name: string, table: Table, prefix = ""): GraphQLInputObjectType => {
-    const baseFilterName = `${name}Filters`;
-    const prefixedFilterName = `${prefix}${name}Filters`;
-
-    if (filterTypeBuffer[baseFilterName]) {
-        return filterTypeBuffer[baseFilterName];
-    }
-
-    if (!filterTypeBuffer[prefixedFilterName]) {
-        filterTypeBuffer[prefixedFilterName] = genInputFiltersFromTable(name, table, prefix);
-    }
-
-    return filterTypeBuffer[prefixedFilterName];
-};
-
-export const nestObject = (flatRow: Record<string, unknown>): Record<string, unknown> => {
-    const result: Record<string, unknown> = {};
-    const nodeMap = new Map<string, Record<string, unknown>>();
-    nodeMap.set('', result);
-
-    for (const [key, value] of Object.entries(flatRow)) {
-        const parts = key.split('_');
-        let currentPath = '';
-        let currentLevel = result;
-
-        for (let i = 0; i < parts.length - 1; i++) {
-            const part = parts[i];
-            const newPath = currentPath ? `${currentPath}_${part}` : part;
-
-            if (!nodeMap.has(newPath)) {
-                const newLevel: Record<string, unknown> = {};
-                nodeMap.set(newPath, newLevel);
-                currentLevel[part] = newLevel;
-            }
-
-            currentLevel = nodeMap.get(newPath)!;
-            currentPath = newPath;
-        }
-
-        const prop = parts[parts.length - 1];
-        currentLevel[prop] = value;
-    }
-
-    const stack: Array<[Record<string, unknown>, string[]]> = [[result, []]];
-    const removalQueue: Array<[string[], string]> = [];
-
-    while (stack.length > 0) {
-        const [node, path] = stack.pop()!;
-        let hasValidContent = false;
-        let hasId = false;
-
-        // Check for ID presence first
-        if ('id' in node && node.id !== null) {
-            hasId = true;
-            hasValidContent = true;
-        }
-
-        for (const [key, value] of Object.entries(node)) {
-            if (typeof value === 'object' && value !== null) {
-                stack.push([value as Record<string, unknown>, [...path, key]]);
-                hasValidContent = true;
-            } else if (value !== null) {
-                hasValidContent = true;
-            }
-        }
-
-        if (!hasValidContent && !hasId) {
-            removalQueue.push([path, path[path.length - 1]]);
-        }
-    }
-
-    for (const [path, key] of removalQueue) {
-        if (path.length === 0) continue;
-
-        const parentPath = path.slice(0, -1).join('_');
-        const parent = nodeMap.get(parentPath) || result;
-        delete parent[key];
-    }
-
-    return result;
-};
-
-export function generateSchemaData<T extends DrizzleSchemaType>(schema: T) {
-    // @ts-expect-error asd
-    const filters: Record<keyof T, GraphQLInputObjectType> = {}
-    // @ts-expect-error asd
-    const types: Record<keyof T, GraphQLObjectType> = {}
-
-    createObjectTypes(schema);
-
-    for (const name in schema) {
-        const table = schema[name]
-        const objectType = objectTypeBuffer[name];
-        if (!objectType) throw new Error(`GraphQL type for ${name} is undefined.`);
-        types[name] = objectType
-        filters[name] = genInputFiltersFromTable(name, table)
     }
 
     return {
-        types,
-        filters
-    }
-}
+        query,
+        totalQuery
+    };
+};
 
-export function parseGraphQLResolveInfo(
+const parseWhereFilters = (table: Table, filters?: WhereFilterObject): SQL | undefined => {
+    if (!filters) return undefined;
+    const conds: SQL[] = [];
+    for (const colName in filters) {
+        const filterObj = filters[colName];
+        if (!filterObj) continue;
+        const column = table[colName as keyof typeof table] as unknown as Column;
+        if (!column) continue;
+        for (const op in filterObj) {
+            const value = filterObj[op as WhereFilters];
+            if (value === undefined || value === null) continue;
+            let cond: SQL | undefined;
+            switch (op as WhereFilters) {
+                case "eq":
+                    cond = eq(column, value);
+                    break;
+                case "gt":
+                    cond = gt(column, value);
+                    break;
+                case "gte":
+                    cond = gte(column, value);
+                    break;
+                case "lt":
+                    cond = lt(column, value);
+                    break;
+                case "lte":
+                    cond = lte(column, value);
+                    break;
+                case "inArray":
+                    cond = inArray(column, value as unknown[]);
+                    break;
+                case "notInArray":
+                    cond = notInArray(column, value as unknown[]);
+                    break;
+                case "like":
+                    cond = like(column, value as string);
+                    break;
+                case "notLike":
+                    cond = notLike(column, value as string);
+                    break;
+                case "ilike":
+                    cond = ilike(column, value as string);
+                    break;
+                case "notIlike":
+                    cond = notIlike(column, value as string);
+                    break;
+                case "isNull":
+                    if (value) cond = isNull(column);
+                    break;
+                case "isNotNull":
+                    if (value) cond = isNotNull(column);
+                    break;
+            }
+            if (cond) conds.push(cond);
+        }
+    }
+    return conds.length ? and(...conds) : undefined;
+};
+
+// ──────────────────────────────────────────────
+// SECTION: GraphQL ResolveInfo Parsing Helpers
+// ──────────────────────────────────────────────
+
+export const parseGraphQLResolveInfo = (
     baseObjectName: keyof typeof tables,
     info: GraphQLResolveInfo,
     userRole: Roles,
-    maxDepth: number = 5,
-    rootBase: string = "data"
-): QueryAnalysisResult | null {
+    maxDepth = 5,
+    rootBase = "data"
+): QueryAnalysisResult | null => {
     const fieldNodes = info.fieldNodes;
     if (!fieldNodes[0]?.selectionSet?.selections) return null;
-
-    const stack: Array<{
-        objectName: string;
-        selections: readonly SelectionNode[];
-        currentDepth: number;
-        parentObj: ParsedGraphQLResolveInfo;
-        whereArg?: WhereFilterObject;
-    }> = [];
-
     const result: QueryAnalysisResult = {
         obj: {},
         depth: 0,
@@ -597,154 +418,142 @@ export function parseGraphQLResolveInfo(
             tables: new Set<Table>(),
             columns: new Map<string, Set<string>>(),
             joinTables: new Set<string>(),
-            whereConditions: new Map<string, WhereFilterObject>(),
-        },
+            whereConditions: new Map<string, WhereFilterObject>()
+        }
     };
+    const baseWhere = getWhereArgument(fieldNodes[0], info.variableValues);
+    const stack: Array<{
+        objectName: string;
+        selections: readonly any[];
+        depth: number;
+        parent: ParsedGraphQLResolveInfo;
+    }> = [];
 
-    const baseWhereArg = getWhereArgument(fieldNodes[0], info.variableValues);
-
-    for (const selection of fieldNodes[0].selectionSet.selections) {
-        if (selection.kind === Kind.FIELD && selection.name.value === rootBase && selection.selectionSet) {
+    // Find the root "data" field.
+    const selections = fieldNodes[0].selectionSet.selections;
+    for (let i = 0, len = selections.length; i < len; i++) {
+        const sel = selections[i];
+        if (sel.kind === Kind.FIELD && sel.name.value === rootBase && sel.selectionSet) {
             stack.push({
                 objectName: baseObjectName,
-                selections: selection.selectionSet.selections,
-                currentDepth: 1,
-                parentObj: result.obj,
-                whereArg: baseWhereArg
+                selections: sel.selectionSet.selections,
+                depth: 1,
+                parent: result.obj
             });
-            result.resources.tables.add(baseObjectName);
-            if (baseWhereArg) {
-                result.resources.whereConditions.set(baseObjectName, baseWhereArg);
-            }
+            result.resources.tables.add(tables[baseObjectName]);
+            if (baseWhere) result.resources.whereConditions.set(baseObjectName, baseWhere);
             break;
         }
     }
 
-    while (stack.length > 0) {
-        const {objectName, selections, currentDepth, parentObj, whereArg} = stack.pop()!;
-        const table: Table | undefined = tables[objectName];
+    while (stack.length) {
+        const {objectName, selections, depth, parent} = stack.pop()!;
+        const table = tables[objectName];
+        if (!table) throw new GraphQLError(`Table ${objectName} not found`);
+        if (depth > result.depth) result.depth = depth;
+        if (depth > maxDepth) throw new GraphQLError(`Max depth of ${maxDepth} exceeded`);
 
-        if (!table) {
-            throw new GraphQLError(`Table ${objectName} not found`);
-        }
-
-        if (currentDepth > result.depth) {
-            result.depth = currentDepth;
-        }
-
-        if (currentDepth > maxDepth) {
-            throw new GraphQLError(`Max depth of ${maxDepth} exceeded`);
-        }
-
-        for (const selection of selections) {
-            if (selection.kind !== Kind.FIELD) continue;
-
-            const fieldName = selection.name.value;
-            const column = table[fieldName as keyof typeof table];
-
-            if (selection.selectionSet) {
-                const nestedObj: ParsedGraphQLResolveInfo = {};
-                parentObj[fieldName] = nestedObj;
-
-                const nestedWhereArg = getWhereArgument(selection, info.variableValues);
-
-                const joinedTable: Table | undefined = tables[fieldName];
+        for (let i = 0, len = selections.length; i < len; i++) {
+            const sel = selections[i];
+            if (sel.kind !== Kind.FIELD) continue;
+            const fieldName = sel.name.value;
+            const col = table[fieldName as keyof typeof table];
+            if (sel.selectionSet) {
+                const nested: ParsedGraphQLResolveInfo = {};
+                parent[fieldName] = nested;
+                const nestedWhere = getWhereArgument(sel, info.variableValues);
+                const joinedTable = tables[fieldName];
                 if (joinedTable) {
-                    result.resources.tables.add(fieldName);
+                    result.resources.tables.add(joinedTable);
                     result.resources.joinTables.add(fieldName);
-                    if (nestedWhereArg) {
-                        result.resources.whereConditions.set(fieldName, nestedWhereArg);
-                    }
+                    if (nestedWhere) result.resources.whereConditions.set(fieldName, nestedWhere);
                 }
-
                 stack.push({
                     objectName: fieldName,
-                    selections: selection.selectionSet.selections,
-                    currentDepth: currentDepth + 1,
-                    parentObj: nestedObj,
-                    whereArg: nestedWhereArg
+                    selections: sel.selectionSet.selections,
+                    depth: depth + 1,
+                    parent: nested
                 });
-            } else if (column) {
-                if (!result.resources.columns.has(objectName)) {
-                    result.resources.columns.set(objectName, new Set<string>());
+            } else if (col) {
+                let setCols = result.resources.columns.get(objectName);
+                if (!setCols) {
+                    setCols = new Set<string>();
+                    result.resources.columns.set(objectName, setCols);
                 }
-                result.resources.columns.get(objectName)!.add(fieldName);
-
-                parentObj[fieldName] = column as Column;
+                setCols.add(fieldName);
+                parent[fieldName] = col;
             }
         }
     }
 
-    const authError = authorizeQuery(result.resources, userRole);
-
-    if (authError)
-        throw authError;
-
+    const authErr = authorizeQuery(result.resources, userRole);
+    if (authErr) throw authErr;
     return result.depth > 0 ? result : null;
-}
+};
 
-function getWhereArgument(
-    field: SelectionNode & { arguments?: readonly any[] },
+const getWhereArgument = (
+    field: any & { arguments?: readonly any[] },
     variables: Record<string, any>
-): WhereFilterObject | undefined {
+): WhereFilterObject | undefined => {
     if (!field.arguments?.length) return undefined;
-
-    const whereArg = field.arguments.find(arg => arg.name.value === 'where');
-    if (!whereArg) return undefined;
-
-    if (whereArg.value.kind === Kind.VARIABLE) {
-        const varName = whereArg.value.name.value;
-        return variables[varName];
-    }
-
-    if (whereArg.value.kind === Kind.OBJECT) {
-        return parseWhereObject(whereArg.value);
-    }
-
+    const arg = field.arguments.find((a: any) => a.name.value === 'where');
+    if (!arg) return undefined;
+    if (arg.value.kind === Kind.VARIABLE) return variables[arg.value.name.value];
+    if (arg.value.kind === Kind.OBJECT) return parseWhereObject(arg.value, variables);
     return undefined;
-}
+};
 
-function parseWhereObject(obj: any): WhereFilterObject {
-    const result: WhereFilterObject = {};
-
-    for (const field of obj.fields) {
-        const key = field.name.value;
-        const value = field.value;
-
+const parseWhereObject = (obj: any, variables: Record<string, any>): WhereFilterObject => {
+    const res: WhereFilterObject = {};
+    const fields = obj.fields;
+    for (let i = 0, len = fields.length; i < len; i++) {
+        const f = fields[i];
+        const key = f.name.value;
+        const value = f.value;
         if (value.kind === Kind.OBJECT) {
-            result[key] = parseWhereObject(value);
+            res[key] = parseWhereObject(value, variables);
+        } else if (value.kind === Kind.VARIABLE) {
+            res[key] = variables[value.name.value];
         } else {
-            result[key] = value.value;
+            res[key] = value.value;
         }
     }
+    return res;
+};
 
-    return result;
+// ──────────────────────────────────────────────
+// SECTION: Schema Generation & Utility Functions
+// ──────────────────────────────────────────────
+
+export function generateSchemaData<T extends DrizzleSchemaType>(schema: T) {
+    createObjectTypes(schema);
+    const filters: Record<keyof T, GraphQLInputObjectType> = {} as any;
+    const types: Record<keyof T, GraphQLObjectType> = {} as any;
+    for (const name in schema) {
+        const table = schema[name];
+        const objType = objectTypeBuffer[name];
+        if (!objType) throw new Error(`GraphQL type for ${name} is undefined.`);
+        types[name] = objType;
+        filters[name] = genInputFiltersFromTable(name, table);
+    }
+    return {types, filters};
 }
 
-function authorizeQuery(resources: QueryAnalysisResult['resources'], role: Roles): GraphQLError | null {
-    const permissions = rolePermissions[role]
-
-    for (const table of resources.tables) {
-        if (!permissions.allowedTables.has('*') && !permissions.allowedTables.has(table)) {
-            return new GraphQLError(`Unauthorized access to table: ${table}`);
+const authorizeQuery = (resources: QueryAnalysisResult["resources"], role: Roles): GraphQLError | null => {
+    const perms = rolePermissions[role];
+    for (const t of resources.tables) {
+        if (!perms.allowedTables.has("*") && !perms.allowedTables.has(t)) {
+            return new GraphQLError(`Unauthorized access to table: ${t}`);
         }
     }
-
-    for (const [table, columns] of resources.columns) {
-        const allowedColumns = permissions.allowedColumns.get(table) || permissions.allowedColumns.get('*');
-
-        if (!allowedColumns) {
-            return new GraphQLError(`Unauthorized access to table: ${table}`);
-        }
-
-        if (!allowedColumns.has('*')) {
-            for (const column of columns) {
-                if (!allowedColumns.has(column)) {
-                    return new GraphQLError(`Unauthorized access to column: ${table}.${column}`);
-                }
+    for (const [t, cols] of resources.columns) {
+        const allowed = perms.allowedColumns.get(t) || perms.allowedColumns.get("*");
+        if (!allowed) return new GraphQLError(`Unauthorized access to table: ${t}`);
+        if (!allowed.has("*")) {
+            for (const col of cols) {
+                if (!allowed.has(col)) return new GraphQLError(`Unauthorized access to column: ${t}.${col}`);
             }
         }
     }
-
     return null;
-}
+};

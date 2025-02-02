@@ -17,20 +17,29 @@ export class UsersResolver extends Resolver<Context, UsersInputDTO, UsersOutputD
         context: Context,
         resolveInfo: GraphQLResolveInfo,
     ): Promise<UsersOutputDTO> {
-        const query = buildQuery(
+
+        const {query, totalQuery} = buildQuery(
             userTable,
             parseGraphQLResolveInfo('users', resolveInfo, 'admin'),
             input.pagination
         );
 
         const results = await query.execute();
+        const data = results as unknown as UserSelectModel[];
+
+        const [{count}] = await totalQuery.execute();
+        const offset = input.pagination?.offset || 0;
+        const limit = input.pagination?.limit || 0;
+        const nextOffset = offset + limit;
+        const hasMore = input.pagination ? nextOffset < count : false;
+        const total = count;
 
         return {
-            data: results as unknown as UserSelectModel,
+            data,
             pagination: {
-                nextOffset: 0,
-                total: 0,
-                hasMore: false
+                nextOffset,
+                total,
+                hasMore
             }
         }
     }

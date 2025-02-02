@@ -7,7 +7,7 @@ import {
     paginationOutputObject
 } from "../../../../graphql/objects/pagination.ts";
 import type {SessionSelectModel} from "../../infra/session.table.ts";
-import {GraphQLList} from "graphql";
+import {GraphQLList, GraphQLNonNull} from "graphql";
 
 export interface SessionInputDTO {
     where: WhereFilterObject
@@ -15,7 +15,7 @@ export interface SessionInputDTO {
 }
 
 export interface SessionOutputDTO {
-    data: SessionSelectModel
+    data: Partial<SessionSelectModel>[]
     pagination?: PaginationOutputDTO
 }
 
@@ -30,7 +30,7 @@ export const sessionInput = {
 
 export const sessionOutput = {
     data: {
-        type: new GraphQLList(graphqlSchemaData.types.sessions)
+        type: new GraphQLNonNull(new GraphQLList(graphqlSchemaData.types.sessions))
     },
     pagination: {
         type: paginationOutputObject

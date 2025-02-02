@@ -16,7 +16,7 @@ export interface UsersInputDTO {
 }
 
 export interface UsersOutputDTO {
-    data: UserSelectModel
+    data: Partial<UserSelectModel>[]
     pagination?: PaginationOutputDTO
 }
 
