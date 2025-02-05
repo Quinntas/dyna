@@ -4,6 +4,7 @@ import {
     Column,
     count,
     desc,
+    type DrizzleTypeError,
     eq,
     getTableColumns,
     getTableName,
@@ -37,7 +38,7 @@ import {
     GraphQLScalarType,
     GraphQLString
 } from "graphql";
-import {getTableConfig} from "drizzle-orm/pg-core";
+import {getTableConfig, type PgSelectBase} from "drizzle-orm/pg-core";
 import {Kind} from "graphql/language";
 import {dateScalar} from "../graphql/scalars/date.ts";
 import {db} from "../infra/database.ts";
@@ -557,3 +558,34 @@ const authorizeQuery = (resources: QueryAnalysisResult["resources"], role: Roles
     }
     return null;
 };
+
+export async function runQuery<T>(
+    queries: {
+        query: PgSelectBase<any, any, any>,
+        totalQuery: PgSelectBase<string, { count: SQL<number> }, "partial", Record<string, "not-null">, false, never, {
+            count: number
+        }[], {
+            count: DrizzleTypeError<"You cannot reference this field without assigning it an alias first - use `.as(<alias>)`">
+        }>
+    },
+    pagination?: PaginationInputDTO
+) {
+    const {query, totalQuery} = queries;
+
+    const [results, [{count}]] = await Promise.all([query.execute(), totalQuery.execute()]);
+
+    const offset = pagination?.offset || 0;
+    const limit = pagination?.limit || 0;
+    const nextOffset = offset + limit;
+    const hasMore = pagination ? nextOffset < count : false;
+    const total = count;
+
+    return {
+        data: results as unknown as T[],
+        pagination: {
+            nextOffset,
+            total,
+            hasMore
+        }
+    }
+}
