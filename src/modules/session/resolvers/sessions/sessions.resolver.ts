@@ -17,12 +17,10 @@ export class SessionsResolver extends Resolver<Context, SessionInputDTO, Session
         context: Context,
         resolveInfo: GraphQLResolveInfo,
     ): Promise<SessionOutputDTO> {
-        const queries = buildQuery(
+        return runQuery(buildQuery(
             sessionTable,
             parseGraphQLResolveInfo('sessions', resolveInfo, 'admin'),
             input.pagination
-        );
-
-        return runQuery(queries, input.pagination)
+        ), input.pagination)
     }
 }

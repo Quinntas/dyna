@@ -17,12 +17,10 @@ export class UsersResolver extends Resolver<Context, UsersInputDTO, UsersOutputD
         context: Context,
         resolveInfo: GraphQLResolveInfo,
     ): Promise<UsersOutputDTO> {
-        const queries = buildQuery(
+        return runQuery(buildQuery(
             userTable,
             parseGraphQLResolveInfo('users', resolveInfo, 'admin'),
             input.pagination
-        );
-
-        return runQuery(queries, input.pagination)
+        ), input.pagination)
     }
 }
